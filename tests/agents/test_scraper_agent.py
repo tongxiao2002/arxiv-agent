@@ -1,0 +1,359 @@
+"""Tests for scraper agent."""
+
+from datetime import date
+from unittest.mock import Mock, patch
+
+import pytest
+
+from arxiv_agent.agents.scraper_agent import ScraperAgent
+from arxiv_agent.sources.arxiv_source import ArxivSource
+from arxiv_agent.sources.papers_cool_source import PapersCoolSource
+from arxiv_agent.storage.json_storage import JsonStorage
+from arxiv_agent.utils.retry import RetryError
+
+
+def test_scraper_agent_initialization():
+    """Test scraper agent initialization with arXiv source."""
+    config = {
+        "sources": {
+            "primary": "arxiv",
+            "arxiv": {"categories": ["cs", "physics"], "max_papers": 50},
+        },
+        "storage": {"data_dir": "./papers"},
+    }
+
+    agent = ScraperAgent(config)
+    assert agent.name == "scraper"
+    assert isinstance(agent.source, ArxivSource)
+    assert isinstance(agent.storage, JsonStorage)
+    assert agent.source.categories == ["cs", "physics"]
+    assert agent.source.max_papers == 50
+
+
+def test_scraper_agent_initialization_papers_cool():
+    """Test scraper agent initialization with Papers.cool source."""
+    config = {
+        "sources": {
+            "primary": "papers_cool",
+            "papers_cool": {"categories": ["cs.ai", "cs.lg"], "max_papers": 30},
+        },
+        "storage": {"data_dir": "./papers"},
+    }
+
+    agent = ScraperAgent(config)
+    assert agent.name == "scraper"
+    assert isinstance(agent.source, PapersCoolSource)
+    assert isinstance(agent.storage, JsonStorage)
+    assert agent.source.categories == ["cs.ai", "cs.lg"]
+    assert agent.source.max_papers == 30
+
+
+def test_scraper_agent_initialization_invalid_source():
+    """Test scraper agent initialization with invalid source."""
+    config = {
+        "sources": {
+            "primary": "invalid_source",
+            "arxiv": {"categories": ["cs"]},
+        },
+        "storage": {"data_dir": "./papers"},
+    }
+
+    with pytest.raises(ValueError, match="Unknown primary source"):
+        ScraperAgent(config)
+
+
+def test_scraper_agent_validate_valid_config():
+    """Test configuration validation with valid config."""
+    config = {
+        "sources": {
+            "primary": "arxiv",
+            "arxiv": {"categories": ["cs"]},
+        },
+        "storage": {"data_dir": "./papers"},
+    }
+
+    agent = ScraperAgent(config)
+    assert agent.validate() is True
+
+
+def test_scraper_agent_validate_missing_sections():
+    """Test configuration validation with missing sections."""
+    config = {"sources": {"primary": "arxiv", "arxiv": {"categories": ["cs"]}}}
+    agent = ScraperAgent(config)
+    assert agent.validate() is False  # Missing storage section
+
+    config2 = {"storage": {"data_dir": "./papers"}}
+    agent2 = ScraperAgent(config2)
+    assert agent2.validate() is False  # Missing sources section
+
+
+def test_scraper_agent_validate_invalid_primary_source():
+    """Test configuration validation with invalid primary source."""
+    config = {
+        "sources": {
+            "primary": "invalid",
+            "arxiv": {"categories": ["cs"]},
+        },
+        "storage": {"data_dir": "./papers"},
+    }
+
+    with pytest.raises(ValueError, match="Unknown primary source"):
+        ScraperAgent(config)
+
+
+def test_scraper_agent_validate_missing_categories():
+    """Test configuration validation with missing categories."""
+    config = {
+        "sources": {
+            "primary": "arxiv",
+            "arxiv": {},  # Missing categories
+        },
+        "storage": {"data_dir": "./papers"},
+    }
+
+    agent = ScraperAgent(config)
+    assert agent.validate() is False
+
+
+def test_scraper_agent_validate_missing_data_dir():
+    """Test configuration validation with missing data_dir."""
+    config = {
+        "sources": {
+            "primary": "arxiv",
+            "arxiv": {"categories": ["cs"]},
+        },
+        "storage": {},  # Missing data_dir
+    }
+
+    agent = ScraperAgent(config)
+    assert agent.validate() is False
+
+
+@patch("arxiv_agent.agents.scraper_agent.date")
+@patch.object(ArxivSource, "fetch_papers")
+@patch.object(JsonStorage, "save_papers")
+def test_scraper_agent_run_success_arxiv(mock_save, mock_fetch, mock_date):
+    """Test successful scraper agent run with arXiv source."""
+    # Mock date.today()
+    mock_date.today.return_value = date(2023, 1, 15)
+
+    # Mock papers
+    mock_papers = [
+        Mock(title="Paper 1", abstract="Abstract 1", authors=["Author 1"], arxiv_id="2101.12345"),
+        Mock(title="Paper 2", abstract="Abstract 2", authors=["Author 2"], arxiv_id="2102.67890"),
+    ]
+    mock_fetch.return_value = mock_papers
+    mock_save.return_value = True
+
+    config = {
+        "sources": {
+            "primary": "arxiv",
+            "arxiv": {"categories": ["cs"], "max_papers": 50},
+        },
+        "storage": {"data_dir": "./papers"},
+    }
+
+    agent = ScraperAgent(config)
+    result = agent.run()
+
+    assert result["success"] is True
+    assert result["papers_fetched"] == 2
+    assert result["source"] == "arxiv"
+    assert result["storage_date"] == "2023-01-15"
+    assert "categories" in result
+    mock_fetch.assert_called_once_with(max_papers=50)
+    mock_save.assert_called_once_with(date(2023, 1, 15), mock_papers)
+
+
+@patch("arxiv_agent.agents.scraper_agent.date")
+@patch.object(PapersCoolSource, "fetch_papers")
+@patch.object(JsonStorage, "save_papers")
+def test_scraper_agent_run_success_papers_cool(mock_save, mock_fetch, mock_date):
+    """Test successful scraper agent run with Papers.cool source."""
+    mock_date.today.return_value = date(2023, 1, 16)
+
+    mock_papers = [
+        Mock(title="Paper A", abstract="Abstract A", authors=["Author A"]),
+    ]
+    mock_fetch.return_value = mock_papers
+    mock_save.return_value = True
+
+    config = {
+        "sources": {
+            "primary": "papers_cool",
+            "papers_cool": {"categories": ["cs.ai"], "max_papers": 30},
+        },
+        "storage": {"data_dir": "./papers"},
+    }
+
+    agent = ScraperAgent(config)
+    result = agent.run()
+
+    assert result["success"] is True
+    assert result["papers_fetched"] == 1
+    assert result["source"] == "papers_cool"
+    mock_fetch.assert_called_once_with(max_papers=30)
+    mock_save.assert_called_once_with(date(2023, 1, 16), mock_papers)
+
+
+@patch.object(ArxivSource, "fetch_papers")
+def test_scraper_agent_run_no_papers(mock_fetch):
+    """Test scraper agent run when no papers are fetched."""
+    mock_fetch.return_value = []
+
+    config = {
+        "sources": {
+            "primary": "arxiv",
+            "arxiv": {"categories": ["cs"], "max_papers": 50},
+        },
+        "storage": {"data_dir": "./papers"},
+    }
+
+    agent = ScraperAgent(config)
+    result = agent.run()
+
+    assert result["success"] is True
+    assert result["papers_fetched"] == 0
+    assert result["message"] == "No papers fetched"
+    mock_fetch.assert_called_once()
+
+
+@patch("arxiv_agent.agents.scraper_agent.date")
+@patch.object(ArxivSource, "fetch_papers")
+@patch.object(JsonStorage, "save_papers")
+def test_scraper_agent_run_save_failure(mock_save, mock_fetch, mock_date):
+    """Test scraper agent run when paper saving fails."""
+    mock_date.today.return_value = date(2023, 1, 15)
+    mock_papers = [Mock(title="Paper", abstract="Abstract", authors=["Author"])]
+    mock_fetch.return_value = mock_papers
+    mock_save.return_value = False
+
+    config = {
+        "sources": {
+            "primary": "arxiv",
+            "arxiv": {"categories": ["cs"], "max_papers": 50},
+        },
+        "storage": {"data_dir": "./papers"},
+    }
+
+    agent = ScraperAgent(config)
+    with pytest.raises(RetryError, match="Function run failed after 3 attempts"):
+        agent.run()
+
+
+@patch("arxiv_agent.agents.scraper_agent.date")
+@patch.object(ArxivSource, "validate_config")
+def test_scraper_agent_run_source_validation_fails(mock_validate, mock_date):
+    """Test scraper agent run when source validation fails."""
+    mock_date.today.return_value = date(2023, 1, 15)
+    mock_validate.return_value = False
+
+    config = {
+        "sources": {
+            "primary": "arxiv",
+            "arxiv": {"categories": ["cs"], "max_papers": 50},
+        },
+        "storage": {"data_dir": "./papers"},
+    }
+
+    agent = ScraperAgent(config)
+    with pytest.raises(RetryError, match="Function run failed after 3 attempts"):
+        agent.run()
+
+
+@patch("arxiv_agent.agents.scraper_agent.date")
+@patch.object(ArxivSource, "fetch_papers")
+def test_scraper_agent_run_source_not_initialized(mock_fetch, mock_date):
+    """Test scraper agent run when source is not initialized."""
+    mock_date.today.return_value = date(2023, 1, 15)
+    mock_fetch.return_value = []
+
+    config = {
+        "sources": {
+            "primary": "arxiv",
+            "arxiv": {"categories": ["cs"], "max_papers": 50},
+        },
+        "storage": {"data_dir": "./papers"},
+    }
+
+    agent = ScraperAgent(config)
+    # Manually set source to None to simulate initialization failure
+    agent.source = None
+    with pytest.raises(RetryError, match="Function run failed after 3 attempts"):
+        agent.run()
+
+
+def test_scraper_agent_get_stored_papers():
+    """Test retrieving stored papers."""
+    config = {
+        "sources": {
+            "primary": "arxiv",
+            "arxiv": {"categories": ["cs"]},
+        },
+        "storage": {"data_dir": "./papers"},
+    }
+
+    agent = ScraperAgent(config)
+    target_date = date(2023, 1, 15)
+
+    # Mock storage.load_papers
+    with patch.object(agent.storage, "load_papers") as mock_load:
+        mock_load.return_value = ["paper1", "paper2"]
+        papers = agent.get_stored_papers(target_date)
+
+        assert papers == ["paper1", "paper2"]
+        mock_load.assert_called_once_with(target_date)
+
+
+def test_scraper_agent_get_stored_papers_storage_not_initialized():
+    """Test retrieving stored papers when storage is not initialized."""
+    config = {
+        "sources": {
+            "primary": "arxiv",
+            "arxiv": {"categories": ["cs"]},
+        },
+        "storage": {"data_dir": "./papers"},
+    }
+
+    agent = ScraperAgent(config)
+    agent.storage = None
+
+    with pytest.raises(ValueError, match="Storage not initialized"):
+        agent.get_stored_papers(date(2023, 1, 15))
+
+
+def test_scraper_agent_get_available_dates():
+    """Test retrieving available dates."""
+    config = {
+        "sources": {
+            "primary": "arxiv",
+            "arxiv": {"categories": ["cs"]},
+        },
+        "storage": {"data_dir": "./papers"},
+    }
+
+    agent = ScraperAgent(config)
+
+    with patch.object(agent.storage, "list_dates") as mock_list:
+        mock_list.return_value = [date(2023, 1, 15), date(2023, 1, 16)]
+        dates = agent.get_available_dates()
+
+        assert dates == [date(2023, 1, 15), date(2023, 1, 16)]
+        mock_list.assert_called_once()
+
+
+def test_scraper_agent_get_available_dates_storage_not_initialized():
+    """Test retrieving available dates when storage is not initialized."""
+    config = {
+        "sources": {
+            "primary": "arxiv",
+            "arxiv": {"categories": ["cs"]},
+        },
+        "storage": {"data_dir": "./papers"},
+    }
+
+    agent = ScraperAgent(config)
+    agent.storage = None
+
+    with pytest.raises(ValueError, match="Storage not initialized"):
+        agent.get_available_dates()

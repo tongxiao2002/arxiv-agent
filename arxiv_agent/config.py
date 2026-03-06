@@ -21,16 +21,28 @@ class AgentConfig:
 
 
 @dataclass
+class ArxivSourceConfig:
+    """arXiv source configuration."""
+
+    categories: List[str] = field(default_factory=lambda: ["cs", "physics", "math"])
+    max_papers: int = 100
+
+
+@dataclass
+class PapersCoolSourceConfig:
+    """Papers.cool source configuration."""
+
+    categories: List[str] = field(default_factory=lambda: ["cs.ai", "cs.lg"])
+    max_papers: int = 50
+
+
+@dataclass
 class SourceConfig:
     """Source configuration."""
 
     primary: str = "arxiv"  # "arxiv" or "papers_cool"
-    arxiv: Dict[str, Any] = field(
-        default_factory=lambda: {"categories": ["cs", "physics", "math"]}
-    )
-    papers_cool: Dict[str, Any] = field(
-        default_factory=lambda: {"categories": ["cs.ai", "cs.lg"]}
-    )
+    arxiv: ArxivSourceConfig = field(default_factory=ArxivSourceConfig)
+    papers_cool: PapersCoolSourceConfig = field(default_factory=PapersCoolSourceConfig)
 
 
 @dataclass
@@ -72,6 +84,16 @@ class ScheduleConfig:
 
 
 @dataclass
+class AdvancedConfig:
+    """Advanced configuration."""
+
+    max_retries: int = 5
+    retry_backoff_factor: float = 2.0
+    request_timeout: int = 30
+    log_level: str = "INFO"
+
+
+@dataclass
 class Config:
     """Main configuration class."""
 
@@ -84,6 +106,7 @@ class Config:
     llm: LLMConfig = field(default_factory=LLMConfig)
     email: EmailConfig = field(default_factory=EmailConfig)
     storage: StorageConfig = field(default_factory=StorageConfig)
+    advanced: AdvancedConfig = field(default_factory=AdvancedConfig)
 
     @classmethod
     def from_yaml(cls, yaml_path: Path) -> "Config":
