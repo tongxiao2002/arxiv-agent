@@ -1,0 +1,66 @@
+# Arxiv-Agent Configuration Template
+# Copy this file to config.yaml and customize for your needs
+
+# Agent configuration
+agent:
+  name: "arxiv-agent"
+  timezone: "Asia/Shanghai"  # Default: UTC+8 (Asia/Shanghai)
+  # Available timezones: https://en.wikipedia.org/wiki/List_of_tz_database_time_zones
+
+# Paper sources configuration
+sources:
+  primary: "arxiv"  # "arxiv" or "papers_cool"
+  arxiv:
+    # arXiv categories to scan (see https://arxiv.org/category_taxonomy)
+    categories: ["cs", "physics", "math", "stat"]
+    # Maximum papers to fetch per category per day
+    max_papers: 100
+  papers_cool:
+    # Papers.cool categories (CS subfields)
+    categories: ["cs.ai", "cs.lg", "cs.cv", "cs.cl"]
+    max_papers: 50
+
+# Research topics of interest (used for LLM classification)
+topics:
+  - "machine learning"
+  - "deep learning"
+  - "natural language processing"
+  - "computer vision"
+  - "reinforcement learning"
+  - "large language models"
+
+# Daily schedule (24-hour format)
+schedule:
+  scan_time: "00:00"   # Fetch and classify papers at midnight
+  email_time: "09:00"  # Send email digest at 9 AM
+
+# LLM configuration
+llm:
+  provider: "openai"  # "openai", "anthropic", "local"
+  model: "gpt-4-turbo-preview"  # Model name for classification and summarization
+  classification_temperature: 0.1  # Lower temperature for consistent classification
+  summarization_temperature: 0.3   # Slightly higher for varied summaries
+  # API keys are loaded from .env file
+
+# Email service configuration
+email:
+  service: "sendgrid"  # "sendgrid" or "mailgun"
+  from_email: "arxiv-agent@example.com"  # Sender email address
+  to_emails:
+    - "user@example.com"  # Recipient email addresses
+    # - "team@example.com"  # Multiple recipients supported
+  subject_template: "Daily Papers Digest - {date}"  # Email subject template
+
+# Storage configuration
+storage:
+  data_dir: "./papers"      # Directory for daily JSON files
+  archive_dir: "./archive"  # Directory for monthly compressed archives
+  log_dir: "./logs"         # Directory for log files
+  retention_days: 30        # Number of days to keep data before archiving
+
+# Advanced settings (optional)
+#advanced:
+#  max_retries: 5            # Maximum retries for network operations
+#  retry_backoff_factor: 2   # Exponential backoff factor
+#  request_timeout: 30       # HTTP request timeout in seconds
+#  log_level: "INFO"         # Logging level: DEBUG, INFO, WARNING, ERROR
