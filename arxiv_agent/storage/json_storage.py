@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from arxiv_agent.sources.base_source import Paper
+from arxiv_agent.sources.enhanced_paper import EnhancedPaper
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +40,42 @@ class JsonStorage:
         filename = f"papers_{target_date.isoformat()}.json"
         return self.data_dir / filename
 
+    def _paper_to_dict(self, paper: Paper) -> dict:
+        """
+        Convert Paper or EnhancedPaper to dictionary with enhanced flag.
+
+        Args:
+            paper: Paper or EnhancedPaper object
+
+        Returns:
+            Dictionary representation with enhanced flag
+        """
+        paper_dict = paper.to_dict()
+
+        # Add enhanced flag if not already present
+        if isinstance(paper, EnhancedPaper):
+            paper_dict["enhanced"] = True
+        elif "enhanced" not in paper_dict:
+            paper_dict["enhanced"] = False
+
+        return paper_dict
+
+    def _dict_to_paper(self, paper_dict: dict) -> Paper:
+        """
+        Convert dictionary to Paper or EnhancedPaper based on enhanced flag.
+
+        Args:
+            paper_dict: Dictionary representation of a paper
+
+        Returns:
+            Paper or EnhancedPaper object
+        """
+        # Check enhanced flag
+        if paper_dict.get("enhanced") is True:
+            return EnhancedPaper.from_dict(paper_dict)
+        else:
+            return Paper.from_dict(paper_dict)
+
     def save_papers(self, target_date: date, papers: List[Paper]) -> bool:
         """
         Save papers to JSON file for a given date.
@@ -58,7 +95,7 @@ class JsonStorage:
             data = {
                 "date": target_date.isoformat(),
                 "count": len(papers),
-                "papers": [paper.to_dict() for paper in papers],
+                "papers": [self._paper_to_dict(paper) for paper in papers],
                 "saved_at": datetime.now().isoformat(),
             }
 
@@ -112,7 +149,7 @@ class JsonStorage:
             papers = []
             for paper_dict in data.get("papers", []):
                 try:
-                    paper = Paper.from_dict(paper_dict)
+                    paper = self._dict_to_paper(paper_dict)
                     papers.append(paper)
                 except Exception as e:
                     logger.warning(f"Failed to parse paper from dict: {e}")
