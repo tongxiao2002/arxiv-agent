@@ -27,6 +27,7 @@ class ScraperAgent(BaseAgent):
         super().__init__(name="scraper", config=config)
         self.source = None
         self.storage = None
+        self.timezone = config.get("agent", {}).get("timezone", "Asia/Shanghai")
         self._setup_sources()
         self._setup_storage()
 
@@ -66,6 +67,8 @@ class ScraperAgent(BaseAgent):
         if not self.source:
             raise ValueError("Source not initialized")
 
+        target_date = self._parse_target_date(*args, **kwargs)
+
         # Validate source configuration
         if not self.source.validate_config():
             raise ValueError("Source configuration validation failed")
@@ -87,11 +90,11 @@ class ScraperAgent(BaseAgent):
                 "success": True,
                 "papers_fetched": 0,
                 "message": "No papers fetched",
+                "target_date": target_date.isoformat(),
             }
 
         # Store papers
-        today = date.today()
-        success = self.storage.save_papers(today, papers)
+        success = self.storage.save_papers(target_date, papers)
 
         if not success:
             raise RuntimeError("Failed to save papers to storage")
@@ -104,9 +107,24 @@ class ScraperAgent(BaseAgent):
             "success": True,
             "papers_fetched": len(papers),
             "source": self.source.source_name,
-            "storage_date": today.isoformat(),
+            "storage_date": target_date.isoformat(),
             "categories": self.source.categories if hasattr(self.source, "categories") else [],
         }
+
+    def _parse_target_date(self, *args: Any, **kwargs: Any) -> date:
+        """Parse a target date for storage."""
+        if args and isinstance(args[0], str):
+            return date.fromisoformat(args[0])
+        if args and hasattr(args[0], "isoformat"):
+            return args[0]
+
+        target_date = kwargs.get("target_date")
+        if isinstance(target_date, str):
+            return date.fromisoformat(target_date)
+        if target_date is not None and hasattr(target_date, "isoformat"):
+            return target_date
+
+        return date.today()
 
     def validate(self) -> bool:
         """

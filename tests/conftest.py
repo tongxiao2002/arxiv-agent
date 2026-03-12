@@ -42,7 +42,10 @@ def sample_config_dict() -> Dict[str, Any]:
             "summarization_temperature": 0.3,
         },
         "email": {
-            "service": "sendgrid",
+            "smtp_host": "smtp.example.com",
+            "smtp_port": 587,
+            "smtp_security": "starttls",
+            "smtp_username": "smtp-user",
             "from_email": "test@example.com",
             "to_emails": ["user@example.com"],
             "subject_template": "Test Digest - {date}",
@@ -77,7 +80,7 @@ def env_file(temp_dir: Path) -> Path:
     env_file = temp_dir / ".env"
     env_content = """# Test environment variables
 OPENAI_API_KEY="sk-test123"
-SENDGRID_API_KEY="SG.test"
+SMTP_PASSWORD="smtp-secret"
 TZ="UTC"
 LOG_LEVEL="DEBUG"
 """

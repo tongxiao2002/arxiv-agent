@@ -42,9 +42,12 @@ llm:
   summarization_temperature: 0.3   # Slightly higher for varied summaries
   # API keys are loaded from .env file
 
-# Email service configuration
+# Email delivery configuration
 email:
-  service: "sendgrid"  # "sendgrid" or "mailgun"
+  smtp_host: "smtp.gmail.com"
+  smtp_port: 587
+  smtp_security: "starttls"  # "starttls", "ssl", or "none"
+  smtp_username: "your-email@example.com"
   from_email: "arxiv-agent@example.com"  # Sender email address
   to_emails:
     - "user@example.com"  # Recipient email addresses

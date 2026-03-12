@@ -2,14 +2,23 @@
 
 import logging
 import os
-from dataclasses import dataclass, field
+import re
+from dataclasses import asdict, dataclass, field, is_dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import yaml
 from dotenv import load_dotenv
 
+from arxiv_agent.utils.timezone import is_valid_timezone
+
 logger = logging.getLogger(__name__)
+
+EMAIL_REGEX = re.compile(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$")
+TIME_REGEX = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
+VALID_LLM_PROVIDERS = {"openai", "anthropic", "local"}
+VALID_EMAIL_SECURITY_MODES = {"starttls", "ssl", "none"}
+VALID_PRIMARY_SOURCES = {"arxiv", "papers_cool"}
 
 
 @dataclass
@@ -40,7 +49,7 @@ class PapersCoolSourceConfig:
 class SourceConfig:
     """Source configuration."""
 
-    primary: str = "arxiv"  # "arxiv" or "papers_cool"
+    primary: str = "arxiv"
     arxiv: ArxivSourceConfig = field(default_factory=ArxivSourceConfig)
     papers_cool: PapersCoolSourceConfig = field(default_factory=PapersCoolSourceConfig)
 
@@ -49,7 +58,7 @@ class SourceConfig:
 class LLMConfig:
     """LLM provider configuration."""
 
-    provider: str = "openai"  # "openai", "anthropic", "local"
+    provider: str = "openai"
     model: str = "gpt-4-turbo-preview"
     classification_temperature: float = 0.1
     summarization_temperature: float = 0.3
@@ -57,9 +66,12 @@ class LLMConfig:
 
 @dataclass
 class EmailConfig:
-    """Email service configuration."""
+    """SMTP email configuration."""
 
-    service: str = "sendgrid"  # "sendgrid" or "mailgun"
+    smtp_host: str = "smtp.example.com"
+    smtp_port: int = 587
+    smtp_security: str = "starttls"
+    smtp_username: str = "arxiv-agent@example.com"
     from_email: str = "arxiv-agent@example.com"
     to_emails: List[str] = field(default_factory=lambda: ["user@example.com"])
     subject_template: str = "Daily Papers Digest - {date}"
@@ -111,102 +123,158 @@ class Config:
     @classmethod
     def from_yaml(cls, yaml_path: Path) -> "Config":
         """Load configuration from YAML file."""
-        logger.info(f"Loading configuration from {yaml_path}")
+        logger.info("Loading configuration from %s", yaml_path)
         if not yaml_path.exists():
             raise FileNotFoundError(f"Configuration file not found: {yaml_path}")
 
-        with open(yaml_path, "r") as f:
-            data = yaml.safe_load(f)
+        with open(yaml_path, "r", encoding="utf-8") as handle:
+            data = yaml.safe_load(handle) or {}
 
         return cls.from_dict(data)
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "Config":
         """Create Config from dictionary."""
-        # For simplicity, we'll merge defaults with provided data
-        # In a full implementation, we would recursively merge nested dicts
         config = cls()
 
-        # Merge top-level sections
         for section_name, section_data in data.items():
-            if hasattr(config, section_name):
-                section = getattr(config, section_name)
-                if isinstance(section_data, dict):
-                    # Update dataclass fields
-                    for key, value in section_data.items():
-                        if hasattr(section, key):
-                            setattr(section, key, value)
-                        else:
-                            logger.warning(f"Unknown config key {section_name}.{key}")
-                else:
-                    # For topics list
-                    if section_name == "topics":
-                        config.topics = section_data
-                    else:
-                        logger.warning(
-                            f"Unexpected type for {section_name}: {type(section_data)}"
-                        )
-            else:
-                logger.warning(f"Unknown configuration section: {section_name}")
+            if not hasattr(config, section_name):
+                logger.warning("Unknown configuration section: %s", section_name)
+                continue
+
+            if section_name == "topics":
+                config.topics = list(section_data)
+                continue
+
+            section = getattr(config, section_name)
+            if is_dataclass(section) and isinstance(section_data, dict):
+                _merge_dataclass(section, section_data, prefix=section_name)
+                continue
+
+            logger.warning(
+                "Unexpected type for %s: %s",
+                section_name,
+                type(section_data).__name__,
+            )
 
         return config
 
     def validate(self) -> bool:
-        """Validate configuration."""
-        errors = []
+        """Validate configuration shape and static values."""
+        errors = self.get_validation_errors()
+        for error in errors:
+            logger.error("Configuration error: %s", error)
+        return not errors
 
-        # Validate timezone
-        try:
-            import pytz
+    def get_validation_errors(self) -> List[str]:
+        """Return static configuration validation errors."""
+        errors: List[str] = []
 
-            pytz.timezone(self.agent.timezone)
-        except (ImportError, pytz.exceptions.UnknownTimeZoneError):
+        if not is_valid_timezone(self.agent.timezone):
             errors.append(f"Invalid timezone: {self.agent.timezone}")
 
-        # Validate LLM provider
-        if self.llm.provider not in ["openai", "anthropic", "local"]:
+        if self.llm.provider not in VALID_LLM_PROVIDERS:
             errors.append(f"Invalid LLM provider: {self.llm.provider}")
 
-        # Validate email service
-        if self.email.service not in ["sendgrid", "mailgun"]:
-            errors.append(f"Invalid email service: {self.email.service}")
-
-        # Validate source primary
-        if self.sources.primary not in ["arxiv", "papers_cool"]:
+        if self.sources.primary not in VALID_PRIMARY_SOURCES:
             errors.append(f"Invalid primary source: {self.sources.primary}")
 
-        # Validate email addresses
-        import re
+        if not self.topics or not all(isinstance(topic, str) and topic.strip() for topic in self.topics):
+            errors.append("Topics must contain at least one non-empty topic")
 
-        email_regex = r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$"
-        for email in self.email.to_emails:
-            if not re.match(email_regex, email):
-                errors.append(f"Invalid email address: {email}")
+        if not TIME_REGEX.match(self.schedule.scan_time):
+            errors.append(f"Invalid schedule.scan_time: {self.schedule.scan_time}")
 
-        if errors:
-            for error in errors:
-                logger.error(f"Configuration error: {error}")
-            return False
-        return True
+        if not TIME_REGEX.match(self.schedule.email_time):
+            errors.append(f"Invalid schedule.email_time: {self.schedule.email_time}")
+
+        if self.email.smtp_security not in VALID_EMAIL_SECURITY_MODES:
+            errors.append(f"Invalid email smtp_security: {self.email.smtp_security}")
+
+        if not self.email.smtp_host.strip():
+            errors.append("Email smtp_host is required")
+
+        if not isinstance(self.email.smtp_port, int) or self.email.smtp_port <= 0:
+            errors.append("Email smtp_port must be a positive integer")
+
+        if not EMAIL_REGEX.match(self.email.from_email):
+            errors.append(f"Invalid email address: {self.email.from_email}")
+
+        if not self.email.to_emails:
+            errors.append("At least one recipient email is required")
+        else:
+            for email in self.email.to_emails:
+                if not EMAIL_REGEX.match(email):
+                    errors.append(f"Invalid email address: {email}")
+
+        if not self.email.subject_template or "{date}" not in self.email.subject_template:
+            errors.append("Email subject_template must contain the {date} placeholder")
+
+        return errors
+
+    def validate_runtime_requirements(
+        self,
+        *,
+        require_llm: bool = False,
+        require_email: bool = False,
+    ) -> bool:
+        """Validate environment-dependent runtime requirements."""
+        errors = self.get_runtime_validation_errors(
+            require_llm=require_llm,
+            require_email=require_email,
+        )
+        for error in errors:
+            logger.error("Runtime configuration error: %s", error)
+        return not errors
+
+    def get_runtime_validation_errors(
+        self,
+        *,
+        require_llm: bool = False,
+        require_email: bool = False,
+    ) -> List[str]:
+        """Return runtime validation errors that depend on environment secrets."""
+        errors: List[str] = []
+
+        if require_llm and self.llm.provider in {"openai", "anthropic"}:
+            env_var = (
+                "OPENAI_API_KEY"
+                if self.llm.provider == "openai"
+                else "ANTHROPIC_API_KEY"
+            )
+            if not os.getenv(env_var):
+                errors.append(
+                    f"{env_var} environment variable not set for LLM provider {self.llm.provider}"
+                )
+
+        if require_email and self.email.smtp_username and not os.getenv("SMTP_PASSWORD"):
+            errors.append(
+                "SMTP_PASSWORD environment variable not set for authenticated SMTP delivery"
+            )
+
+        return errors
 
     def load_env(self, env_path: Optional[Path] = None) -> None:
         """Load environment variables from .env file."""
-        if env_path is None:
-            env_path = Path(".env")
+        env_file = env_path or Path(".env")
 
-        if env_path.exists():
-            load_dotenv(dotenv_path=env_path)
-            logger.info(f"Loaded environment variables from {env_path}")
+        if env_file.exists():
+            load_dotenv(dotenv_path=env_file)
+            logger.info("Loaded environment variables from %s", env_file)
         else:
-            logger.warning(f"Environment file not found: {env_path}")
+            logger.warning("Environment file not found: %s", env_file)
 
-        # Map environment variables to configuration
-        # This can be extended based on needs
         tz = os.getenv("TZ")
         if tz:
             self.agent.timezone = tz
 
-        # LLM API keys are handled by respective providers, not stored in config
+        log_level = os.getenv("LOG_LEVEL")
+        if log_level:
+            self.advanced.log_level = log_level
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert configuration to a plain dictionary."""
+        return asdict(self)
 
     def __repr__(self) -> str:
         return (
@@ -214,5 +282,19 @@ class Config:
         )
 
 
-# Default configuration instance
+def _merge_dataclass(instance: Any, values: Dict[str, Any], prefix: str) -> None:
+    """Merge a nested dictionary into a dataclass instance."""
+    for key, value in values.items():
+        if not hasattr(instance, key):
+            logger.warning("Unknown config key %s.%s", prefix, key)
+            continue
+
+        current = getattr(instance, key)
+        if is_dataclass(current) and isinstance(value, dict):
+            _merge_dataclass(current, value, prefix=f"{prefix}.{key}")
+            continue
+
+        setattr(instance, key, value)
+
+
 default_config = Config()

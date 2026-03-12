@@ -3,7 +3,7 @@
 [![Python Version](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-**Automated research assistant that scans daily academic papers from arXiv and Papers.cool, filters them based on your research interests, and delivers personalized email digests.**
+**Automated research assistant that scans daily academic papers from arXiv and Papers.cool, filters them based on your research interests, and delivers personalized SMTP email digests.**
 
 ## Features
 
@@ -68,12 +68,15 @@ llm:
   model: "gpt-4-turbo-preview"
 
 email:
-  service: "sendgrid"
+  smtp_host: "smtp.gmail.com"
+  smtp_port: 587
+  smtp_security: "starttls"
+  smtp_username: "your-email@example.com"
   from_email: "arxiv-agent@example.com"
   to_emails: ["your-email@example.com"]
 ```
 
-**Required API keys in `.env`**:
+**Required secrets in `.env`**:
 
 ```bash
 # Choose one LLM provider
@@ -81,10 +84,8 @@ OPENAI_API_KEY="sk-..."          # If using OpenAI
 # ANTHROPIC_API_KEY="sk-ant-..."  # If using Anthropic
 # DEEPSEEK_API_KEY="sk-..."       # If using DeepSeek
 
-# Choose one email service
-SENDGRID_API_KEY="SG..."         # If using SendGrid
-# MAILGUN_API_KEY="key-..."       # If using Mailgun
-# MAILGUN_DOMAIN="sandbox....mailgun.org"
+# SMTP password for authenticated delivery
+SMTP_PASSWORD="app-password-or-smtp-password"
 ```
 
 ### 3. Run the Agent
@@ -152,10 +153,13 @@ List of research topics for LLM classification. Papers are evaluated against the
 
 ### Email Configuration
 
-- **service**: Email service ("sendgrid" or "mailgun")
+- **smtp_host**: SMTP server hostname
+- **smtp_port**: SMTP server port
+- **smtp_security**: Connection security ("starttls", "ssl", or "none")
+- **smtp_username**: SMTP username for authenticated delivery
 - **from_email**: Sender email address
 - **to_emails**: List of recipient email addresses
-- **subject_template**: Email subject template (supports {date} placeholder)
+- **subject_template**: Email subject template (must include `{date}`)
 
 ### Storage Configuration
 
@@ -258,6 +262,9 @@ Docker support is planned for a future release.
 ## Troubleshooting
 
 ### Common Issues
+
+- **Missing SMTP password**: Set `SMTP_PASSWORD` in `.env` when `email.smtp_username` is configured.
+- **Scheduler timing looks off**: Confirm `agent.timezone`, `schedule.scan_time`, and `schedule.email_time` use the intended IANA timezone and 24-hour `HH:MM` format.
 
 1. **Configuration file not found**: Ensure `config.yaml` exists in the current directory
 2. **API key errors**: Verify API keys in `.env` are correct and have necessary permissions

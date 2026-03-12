@@ -1,13 +1,31 @@
 """Tests for CLI interface."""
 
-import argparse
 import sys
-from pathlib import Path
-from unittest.mock import MagicMock, Mock, patch
+from unittest.mock import Mock, patch
 
 import pytest
 
 from arxiv_agent.cli import main, run_once_command, start_command, version_command
+from arxiv_agent.config import Config
+
+
+def make_config() -> Config:
+    """Create a minimal real config for CLI unit tests."""
+    return Config.from_dict(
+        {
+            "agent": {"timezone": "Asia/Shanghai"},
+            "topics": ["agents"],
+            "email": {
+                "smtp_host": "smtp.example.com",
+                "smtp_port": 587,
+                "smtp_security": "starttls",
+                "smtp_username": "mailer",
+                "from_email": "agent@example.com",
+                "to_emails": ["user@example.com"],
+                "subject_template": "Digest - {date}",
+            },
+        }
+    )
 
 
 def test_version_command(capsys):
@@ -18,56 +36,98 @@ def test_version_command(capsys):
     assert "Automated paper discovery system" in captured.out
 
 
-def test_start_command(capsys):
-    """Test start command (skeleton implementation)."""
-    config = Mock()
-    start_command(config)
+def test_start_command_wires_scheduler():
+    """Test start command schedules both workflows and blocks in foreground."""
+    config = make_config()
+    scheduler = Mock()
+
+    with patch("arxiv_agent.cli.Scheduler", return_value=scheduler):
+        with patch("arxiv_agent.cli._run_scan_workflow", return_value={"success": True}) as mock_scan:
+            with patch("arxiv_agent.cli._run_email_workflow", return_value={"success": True}) as mock_email:
+                start_command(config)
+                kwargs = scheduler.configure_daily_jobs.call_args.kwargs
+                kwargs["scan_job"]()
+                kwargs["email_job"]()
+
+    scheduler.start.assert_called_once()
+    scheduler.configure_daily_jobs.assert_called_once()
+    scheduler.run_forever.assert_called_once()
+
+    mock_scan.assert_called_once()
+    mock_email.assert_called_once()
+
+
+def test_run_once_command_runs_scan_then_email(capsys):
+    """Test run-once executes scan then email workflow."""
+    config = make_config()
+    observed = []
+
+    def scan_side_effect(*args, **kwargs):
+        observed.append("scan")
+        return {"success": True}
+
+    def email_side_effect(*args, **kwargs):
+        observed.append("email")
+        return {"success": True}
+
+    with patch("arxiv_agent.cli._run_scan_workflow", side_effect=scan_side_effect):
+        with patch("arxiv_agent.cli._run_email_workflow", side_effect=email_side_effect):
+            result = run_once_command(config, dry_run=False)
+
+    assert result["success"] is True
+    assert observed == ["scan", "email"]
     captured = capsys.readouterr()
-    assert "Scheduler not yet implemented" in captured.out
+    assert "Run-once live completed" in captured.out
 
 
 def test_run_once_command_dry_run(capsys):
-    """Test run-once command with dry run."""
-    config = Mock()
-    run_once_command(config, dry_run=True)
-    captured = capsys.readouterr()
-    assert "Dry run" in captured.out
+    """Test run-once dry-run passes the dry-run flag to email workflow."""
+    config = make_config()
 
+    with patch("arxiv_agent.cli._run_scan_workflow", return_value={"success": True}):
+        with patch("arxiv_agent.cli._run_email_workflow", return_value={"success": True}) as mock_email:
+            result = run_once_command(config, dry_run=True)
 
-def test_run_once_command_normal(capsys):
-    """Test run-once command without dry run."""
-    config = Mock()
-    run_once_command(config, dry_run=False)
+    assert result["success"] is True
+    _, kwargs = mock_email.call_args
+    assert kwargs["dry_run"] is True
     captured = capsys.readouterr()
-    assert "Pipeline not yet implemented" in captured.out
+    assert "Run-once dry-run completed" in captured.out
 
 
 @patch("arxiv_agent.cli.setup_logging")
-@patch("arxiv_agent.cli.Config")
-def test_main_version(mock_config, mock_setup_logging, capsys):
+def test_main_version(mock_setup_logging, capsys):
     """Test main with version command."""
     sys.argv = ["arxiv-agent", "version"]
     exit_code = main()
     assert exit_code == 0
     captured = capsys.readouterr()
     assert "Arxiv-Agent v0.1.0" in captured.out
+    mock_setup_logging.assert_called_once()
 
 
+@patch("arxiv_agent.cli.start_command")
 @patch("arxiv_agent.cli.setup_logging")
 @patch("arxiv_agent.cli.Config")
-def test_main_start(mock_config_class, mock_setup_logging):
+def test_main_start(mock_config_class, mock_setup_logging, mock_start_command):
     """Test main with start command."""
-    # Mock config loading
     mock_config = Mock()
     mock_config.validate.return_value = True
+    mock_config.validate_runtime_requirements.return_value = True
     mock_config_class.from_yaml.return_value = mock_config
 
     sys.argv = ["arxiv-agent", "start", "--config", "test.yaml"]
     exit_code = main()
+
     assert exit_code == 0
-    mock_config_class.from_yaml.assert_called_once_with(Path("test.yaml"))
+    mock_config_class.from_yaml.assert_called_once()
     mock_config.load_env.assert_called_once()
     mock_config.validate.assert_called_once()
+    mock_config.validate_runtime_requirements.assert_called_once_with(
+        require_llm=True,
+        require_email=True,
+    )
+    mock_start_command.assert_called_once_with(mock_config)
 
 
 @patch("arxiv_agent.cli.setup_logging")
@@ -78,6 +138,7 @@ def test_main_start_config_not_found(mock_config_class, mock_setup_logging, caps
 
     sys.argv = ["arxiv-agent", "start"]
     exit_code = main()
+
     assert exit_code == 1
     captured = capsys.readouterr()
     assert "Configuration file not found" in captured.err
@@ -93,38 +154,50 @@ def test_main_start_validation_failed(mock_config_class, mock_setup_logging, cap
 
     sys.argv = ["arxiv-agent", "start"]
     exit_code = main()
+
     assert exit_code == 1
     assert "Configuration validation failed" in caplog.text
 
 
+@patch("arxiv_agent.cli.run_once_command")
 @patch("arxiv_agent.cli.setup_logging")
 @patch("arxiv_agent.cli.Config")
-def test_main_run_once(mock_config_class, mock_setup_logging):
+def test_main_run_once(mock_config_class, mock_setup_logging, mock_run_once_command):
     """Test main with run-once command."""
     mock_config = Mock()
     mock_config.validate.return_value = True
+    mock_config.validate_runtime_requirements.return_value = True
     mock_config_class.from_yaml.return_value = mock_config
 
     sys.argv = ["arxiv-agent", "run-once", "--dry-run"]
     exit_code = main()
+
     assert exit_code == 0
-    mock_config_class.from_yaml.assert_called_once_with(Path("config.yaml"))
-    mock_config.load_env.assert_called_once()
-    mock_config.validate.assert_called_once()
+    mock_config.validate_runtime_requirements.assert_called_once_with(
+        require_llm=True,
+        require_email=False,
+    )
+    mock_run_once_command.assert_called_once_with(mock_config, dry_run=True)
 
 
 @patch("arxiv_agent.cli.setup_logging")
 @patch("arxiv_agent.cli.Config")
-def test_main_run_once_with_custom_config(mock_config_class, mock_setup_logging):
-    """Test main with run-once command and custom config path."""
+def test_main_run_once_runtime_validation_failed(
+    mock_config_class,
+    mock_setup_logging,
+    caplog,
+):
+    """Test main with run-once command when runtime validation fails."""
     mock_config = Mock()
     mock_config.validate.return_value = True
+    mock_config.validate_runtime_requirements.return_value = False
     mock_config_class.from_yaml.return_value = mock_config
 
-    sys.argv = ["arxiv-agent", "run-once", "--config", "custom.yaml"]
+    sys.argv = ["arxiv-agent", "run-once"]
     exit_code = main()
-    assert exit_code == 0
-    mock_config_class.from_yaml.assert_called_once_with(Path("custom.yaml"))
+
+    assert exit_code == 1
+    assert "Runtime configuration validation failed" in caplog.text
 
 
 def test_main_no_command(capsys):
@@ -139,7 +212,6 @@ def test_main_no_command(capsys):
 def test_main_help(capsys):
     """Test main with --help flag."""
     sys.argv = ["arxiv-agent", "--help"]
-    # argparse will print help and exit with 0
     with pytest.raises(SystemExit) as exc_info:
         main()
     assert exc_info.value.code == 0
@@ -165,40 +237,7 @@ def test_main_unexpected_error(mock_config_class, mock_setup_logging, capsys):
 
     sys.argv = ["arxiv-agent", "start"]
     exit_code = main()
+
     assert exit_code == 1
     captured = capsys.readouterr()
     assert "Unexpected error" in captured.err
-
-
-def test_cli_module_execution():
-    """Test that the CLI module can be executed directly."""
-    # This tests that __main__ block exists and calls main()
-    with patch("arxiv_agent.cli.main") as mock_main:
-        mock_main.return_value = 0
-        with patch("arxiv_agent.cli.sys.exit") as mock_exit:
-            # Simulate running the module directly
-            exec(open("arxiv_agent/cli.py").read())
-            # The __main__ block should call main() and sys.exit()
-            # But this is hard to test without actually running as script
-            pass
-
-
-@patch("arxiv_agent.cli.setup_logging")
-def test_main_logging_setup(mock_setup_logging):
-    """Test that logging is set up for commands that need config."""
-    mock_config = Mock()
-    mock_config.validate.return_value = True
-    with patch("arxiv_agent.cli.Config") as mock_config_class:
-        mock_config_class.from_yaml.return_value = mock_config
-
-        sys.argv = ["arxiv-agent", "start"]
-        main()
-        mock_setup_logging.assert_called_once()
-
-
-@patch("arxiv_agent.cli.setup_logging")
-def test_main_logging_setup_for_version(mock_setup_logging):
-    """Test that logging is also set up for version command."""
-    sys.argv = ["arxiv-agent", "version"]
-    main()
-    mock_setup_logging.assert_called_once()

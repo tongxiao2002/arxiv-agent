@@ -81,16 +81,19 @@ class SupervisorAgent(BaseAgent):
             Dictionary mapping agent names to their results
         """
         results = {}
+        self._reset_run_state()
 
         if not self.execution_order:
             logger.warning(
                 "No execution order set, running all agents in registration order"
             )
-            self.execution_order = list(self.agents.keys())
+            execution_order = list(self.agents.keys())
+        else:
+            execution_order = list(self.execution_order)
 
-        logger.info(f"Starting agent execution with order: {self.execution_order}")
+        logger.info(f"Starting agent execution with order: {execution_order}")
 
-        for agent_name in self.execution_order:
+        for agent_name in execution_order:
             agent_info = self.agents[agent_name]
             agent = agent_info.agent
 
@@ -125,6 +128,17 @@ class SupervisorAgent(BaseAgent):
 
         logger.info("Agent execution completed")
         return results
+
+    def _reset_run_state(self) -> None:
+        """Reset per-run supervisor state so multiple executions stay isolated."""
+        for agent_info in self.agents.values():
+            agent_info.last_run_result = None
+            agent_info.error = None
+            agent_info.status = (
+                AgentStatus.INITIALIZED
+                if agent_info.agent._initialized
+                else AgentStatus.CREATED
+            )
 
     def validate(self) -> bool:
         """

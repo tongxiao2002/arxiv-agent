@@ -1,7 +1,5 @@
 """Tests for configuration management."""
 
-import os
-import tempfile
 from pathlib import Path
 
 import pytest
@@ -19,7 +17,7 @@ def test_config_defaults():
     assert "machine learning" in config.topics
     assert config.schedule.scan_time == "00:00"
     assert config.llm.provider == "openai"
-    assert config.email.service == "sendgrid"
+    assert config.email.smtp_security == "starttls"
     assert config.storage.data_dir == "./papers"
 
 
@@ -41,7 +39,10 @@ def test_config_from_dict():
             "summarization_temperature": 0.4,
         },
         "email": {
-            "service": "mailgun",
+            "smtp_host": "smtp.example.com",
+            "smtp_port": 465,
+            "smtp_security": "ssl",
+            "smtp_username": "mailer",
             "from_email": "test@example.com",
             "to_emails": ["user1@example.com", "user2@example.com"],
             "subject_template": "Test - {date}",
@@ -58,11 +59,11 @@ def test_config_from_dict():
     assert config.agent.name == "test-agent"
     assert config.agent.timezone == "UTC"
     assert config.sources.primary == "papers_cool"
-    assert config.sources.arxiv["categories"] == ["physics"]
+    assert config.sources.arxiv.categories == ["physics"]
     assert config.topics == ["quantum computing", "AI"]
     assert config.schedule.scan_time == "01:00"
     assert config.llm.provider == "anthropic"
-    assert config.email.service == "mailgun"
+    assert config.email.smtp_security == "ssl"
     assert config.email.to_emails == ["user1@example.com", "user2@example.com"]
     assert config.storage.data_dir == "/custom/papers"
     assert config.storage.retention_days == 90
@@ -71,8 +72,8 @@ def test_config_from_dict():
 def test_config_from_yaml_file(temp_dir, sample_config_dict):
     """Test loading configuration from YAML file."""
     config_file = temp_dir / "config.yaml"
-    with open(config_file, "w") as f:
-        yaml.dump(sample_config_dict, f)
+    with open(config_file, "w", encoding="utf-8") as handle:
+        yaml.dump(sample_config_dict, handle)
 
     config = Config.from_yaml(config_file)
     assert config.agent.name == "test-agent"
@@ -85,8 +86,10 @@ def test_config_from_yaml_file_not_found():
         Config.from_yaml(Path("/nonexistent/config.yaml"))
 
 
-def test_config_validation_valid(config):
-    """Test validation with valid configuration."""
+def test_config_validation_valid(monkeypatch, config):
+    """Test schema validation does not depend on runtime secrets."""
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("SMTP_PASSWORD", raising=False)
     assert config.validate() is True
 
 
@@ -104,10 +107,10 @@ def test_config_validation_invalid_llm_provider():
     assert config.validate() is False
 
 
-def test_config_validation_invalid_email_service():
-    """Test validation with invalid email service."""
+def test_config_validation_invalid_smtp_security():
+    """Test validation with invalid SMTP security mode."""
     config = Config()
-    config.email.service = "invalid_service"
+    config.email.smtp_security = "tls"
     assert config.validate() is False
 
 
@@ -125,17 +128,41 @@ def test_config_validation_invalid_email_address():
     assert config.validate() is False
 
 
+def test_config_validation_missing_recipient():
+    """Test validation with no recipient emails."""
+    config = Config()
+    config.email.to_emails = []
+    assert config.validate() is False
+
+
+def test_config_runtime_validation_llm_missing_key(monkeypatch, config):
+    """Test runtime readiness for LLM credentials."""
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    assert config.validate_runtime_requirements(require_llm=True) is False
+
+
+def test_config_runtime_validation_email_missing_password(monkeypatch, config):
+    """Test runtime readiness for SMTP credentials."""
+    monkeypatch.delenv("SMTP_PASSWORD", raising=False)
+    assert config.validate_runtime_requirements(require_email=True) is False
+
+
+def test_config_runtime_validation_email_not_required(monkeypatch, config):
+    """Test runtime validation can skip SMTP checks."""
+    monkeypatch.delenv("SMTP_PASSWORD", raising=False)
+    assert config.validate_runtime_requirements(require_email=False) is True
+
+
 def test_config_load_env(env_file, config):
     """Test loading environment variables."""
     config.load_env(env_file)
-    # Check that timezone was updated from .env
     assert config.agent.timezone == "UTC"
+    assert config.advanced.log_level == "DEBUG"
 
 
 def test_config_load_env_file_not_found(config, caplog):
     """Test loading environment variables when file doesn't exist."""
     config.load_env(Path("/nonexistent/.env"))
-    # Should log warning but not raise exception
     assert "not found" in caplog.text
 
 
@@ -150,21 +177,19 @@ def test_config_dataclasses():
     llm = LLMConfig(provider="openai", model="gpt-4")
     assert llm.provider == "openai"
 
-    email = EmailConfig(service="sendgrid", from_email="test@example.com")
-    assert email.service == "sendgrid"
+    email = EmailConfig(smtp_host="smtp.example.com", from_email="test@example.com")
+    assert email.smtp_host == "smtp.example.com"
 
 
 def test_config_unknown_section(caplog):
     """Test that unknown configuration sections are logged."""
-    data = {"unknown_section": {"key": "value"}, "agent": {"name": "test"}}
-    config = Config.from_dict(data)
+    Config.from_dict({"unknown_section": {"key": "value"}, "agent": {"name": "test"}})
     assert "Unknown configuration section" in caplog.text
 
 
 def test_config_unknown_key(caplog):
     """Test that unknown keys within sections are logged."""
-    data = {"agent": {"name": "test", "unknown_key": "value"}}
-    config = Config.from_dict(data)
+    Config.from_dict({"agent": {"name": "test", "unknown_key": "value"}})
     assert "Unknown config key" in caplog.text
 
 
@@ -185,9 +210,12 @@ def test_config_topics_override():
 
 def test_config_partial_override():
     """Test partial configuration override."""
-    data = {"agent": {"timezone": "Europe/London"}, "llm": {"model": "gpt-3.5-turbo"}}
+    data = {
+        "agent": {"timezone": "Europe/London"},
+        "llm": {"model": "gpt-3.5-turbo"},
+    }
     config = Config.from_dict(data)
     assert config.agent.timezone == "Europe/London"
-    assert config.agent.name == "arxiv-agent"  # default preserved
+    assert config.agent.name == "arxiv-agent"
     assert config.llm.model == "gpt-3.5-turbo"
-    assert config.llm.provider == "openai"  # default preserved
+    assert config.llm.provider == "openai"

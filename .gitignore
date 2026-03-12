@@ -3,6 +3,10 @@
 
 **/.DS_Store
 
+# cache
+.mypy_cache
+.pytest_cache
+
 # Project-specific patterns
 logs/
 papers/
