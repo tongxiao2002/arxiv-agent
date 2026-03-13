@@ -19,6 +19,15 @@ TIME_REGEX = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
 VALID_LLM_PROVIDERS = {"openai", "anthropic", "local"}
 VALID_EMAIL_SECURITY_MODES = {"starttls", "ssl", "none"}
 VALID_PRIMARY_SOURCES = {"arxiv", "papers_cool"}
+SUPPORTED_RUNTIME_LLM_PROVIDERS = {"openai", "anthropic"}
+SUPPORTED_RUNTIME_PRIMARY_SOURCES = {"arxiv"}
+ENV_OVERRIDE_LOADERS = {
+    "TZ": ("agent", "timezone", str),
+    "LOG_LEVEL": ("advanced", "log_level", str),
+    "MAX_RETRIES": ("advanced", "max_retries", int),
+    "RETRY_BACKOFF_FACTOR": ("advanced", "retry_backoff_factor", float),
+    "REQUEST_TIMEOUT": ("advanced", "request_timeout", int),
+}
 
 
 @dataclass
@@ -59,7 +68,7 @@ class LLMConfig:
     """LLM provider configuration."""
 
     provider: str = "openai"
-    model: str = "gpt-4-turbo-preview"
+    model: str = "gpt-4o-mini"
     classification_temperature: float = 0.1
     summarization_temperature: float = 0.3
 
@@ -179,7 +188,9 @@ class Config:
         if self.sources.primary not in VALID_PRIMARY_SOURCES:
             errors.append(f"Invalid primary source: {self.sources.primary}")
 
-        if not self.topics or not all(isinstance(topic, str) and topic.strip() for topic in self.topics):
+        if not self.topics or not all(
+            isinstance(topic, str) and topic.strip() for topic in self.topics
+        ):
             errors.append("Topics must contain at least one non-empty topic")
 
         if not TIME_REGEX.match(self.schedule.scan_time):
@@ -190,6 +201,18 @@ class Config:
 
         if self.email.smtp_security not in VALID_EMAIL_SECURITY_MODES:
             errors.append(f"Invalid email smtp_security: {self.email.smtp_security}")
+
+        if self.advanced.max_retries <= 0:
+            errors.append("advanced.max_retries must be a positive integer")
+
+        if self.advanced.retry_backoff_factor < 1:
+            errors.append("advanced.retry_backoff_factor must be at least 1")
+
+        if self.advanced.request_timeout <= 0:
+            errors.append("advanced.request_timeout must be a positive integer")
+
+        if not hasattr(logging, self.advanced.log_level.upper()):
+            errors.append(f"Invalid advanced.log_level: {self.advanced.log_level}")
 
         if not self.email.smtp_host.strip():
             errors.append("Email smtp_host is required")
@@ -207,7 +230,10 @@ class Config:
                 if not EMAIL_REGEX.match(email):
                     errors.append(f"Invalid email address: {email}")
 
-        if not self.email.subject_template or "{date}" not in self.email.subject_template:
+        if (
+            not self.email.subject_template
+            or "{date}" not in self.email.subject_template
+        ):
             errors.append("Email subject_template must contain the {date} placeholder")
 
         return errors
@@ -236,6 +262,18 @@ class Config:
         """Return runtime validation errors that depend on environment secrets."""
         errors: List[str] = []
 
+        if self.sources.primary not in SUPPORTED_RUNTIME_PRIMARY_SOURCES:
+            errors.append(
+                "Source 'papers_cool' is not production-ready in this MVP. "
+                "Set sources.primary to 'arxiv'."
+            )
+
+        if self.llm.provider not in SUPPORTED_RUNTIME_LLM_PROVIDERS:
+            errors.append(
+                "LLM provider 'local' is not implemented in this MVP. "
+                "Set llm.provider to 'openai' or 'anthropic'."
+            )
+
         if require_llm and self.llm.provider in {"openai", "anthropic"}:
             env_var = (
                 "OPENAI_API_KEY"
@@ -247,7 +285,11 @@ class Config:
                     f"{env_var} environment variable not set for LLM provider {self.llm.provider}"
                 )
 
-        if require_email and self.email.smtp_username and not os.getenv("SMTP_PASSWORD"):
+        if (
+            require_email
+            and self.email.smtp_username
+            and not os.getenv("SMTP_PASSWORD")
+        ):
             errors.append(
                 "SMTP_PASSWORD environment variable not set for authenticated SMTP delivery"
             )
@@ -264,13 +306,22 @@ class Config:
         else:
             logger.warning("Environment file not found: %s", env_file)
 
-        tz = os.getenv("TZ")
-        if tz:
-            self.agent.timezone = tz
+        for env_var, (section_name, field_name, parser) in ENV_OVERRIDE_LOADERS.items():
+            value = os.getenv(env_var)
+            if not value:
+                continue
 
-        log_level = os.getenv("LOG_LEVEL")
-        if log_level:
-            self.advanced.log_level = log_level
+            section = getattr(self, section_name)
+            try:
+                setattr(section, field_name, parser(value))
+            except ValueError:
+                logger.warning(
+                    "Ignoring invalid %s environment override for %s.%s: %s",
+                    env_var,
+                    section_name,
+                    field_name,
+                    value,
+                )
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert configuration to a plain dictionary."""

@@ -124,9 +124,7 @@ class SourceError(Exception):
     def __init__(self, message: str, source_name: Optional[str] = None):
         self.source_name = source_name
         self.message = message
-        super().__init__(
-            f"Source {source_name}: {message}" if source_name else message
-        )
+        super().__init__(f"Source {source_name}: {message}" if source_name else message)
 
 
 class SourceConfigurationError(SourceError):

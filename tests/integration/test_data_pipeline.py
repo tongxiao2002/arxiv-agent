@@ -59,26 +59,22 @@ def test_data_pipeline_integration(temp_dir):
         mock_response.raise_for_status = Mock()
         mock_get.return_value = mock_response
 
-        # Mock date.today() to have consistent date for testing
-        with patch("arxiv_agent.agents.scraper_agent.date") as mock_date:
-            mock_date.today.return_value = date(2023, 1, 15)
-
-            # Create and run scraper agent
+        with patch(
+            "arxiv_agent.agents.scraper_agent.get_current_date_in_timezone",
+            return_value=date(2023, 1, 15),
+        ):
             agent = ScraperAgent(config)
             result = agent.run()
 
-            # Verify agent result
             assert result["success"] is True
             assert result["papers_fetched"] == 2
             assert result["source"] == "arxiv"
             assert result["storage_date"] == "2023-01-15"
             assert "categories" in result
 
-            # Verify storage
             storage_file = data_dir / "papers_2023-01-15.json"
             assert storage_file.exists()
 
-            # Verify stored data
             with open(storage_file, "r") as f:
                 stored_data = json.load(f)
 
@@ -96,13 +92,11 @@ def test_data_pipeline_integration(temp_dir):
             assert paper2["title"] == "Another Paper"
             assert paper2["arxiv_id"] == "2102.67890"
 
-            # Verify we can load papers back via agent
             loaded_papers = agent.get_stored_papers(date(2023, 1, 15))
             assert len(loaded_papers) == 2
             assert loaded_papers[0].title == "Test Paper Title"
             assert loaded_papers[1].arxiv_id == "2102.67890"
 
-            # Verify available dates
             dates = agent.get_available_dates()
             assert dates == [date(2023, 1, 15)]
 
@@ -131,19 +125,17 @@ def test_data_pipeline_with_papers_cool(temp_dir):
             mock_soup.find_all.return_value = []
             mock_bs.return_value = mock_soup
 
-            with patch("arxiv_agent.agents.scraper_agent.date") as mock_date:
-                mock_date.today.return_value = date(2023, 1, 16)
-
+            with patch(
+                "arxiv_agent.agents.scraper_agent.get_current_date_in_timezone",
+                return_value=date(2023, 1, 16),
+            ):
                 agent = ScraperAgent(config)
                 result = agent.run()
 
-                # Should succeed with zero papers
                 assert result["success"] is True
                 assert result["papers_fetched"] == 0
                 assert result["message"] == "No papers fetched"
-                # source key is not included when no papers fetched
 
-                # No file should be created (no papers)
                 storage_file = data_dir / "papers_2023-01-16.json"
                 assert not storage_file.exists()
 
@@ -163,16 +155,15 @@ def test_data_pipeline_error_handling(temp_dir):
     with patch("arxiv_agent.sources.arxiv_source.requests.get") as mock_get:
         mock_get.side_effect = Exception("Network error")
 
-        with patch("arxiv_agent.agents.scraper_agent.date") as mock_date:
-            mock_date.today.return_value = date(2023, 1, 15)
-
+        with patch(
+            "arxiv_agent.agents.scraper_agent.get_current_date_in_timezone",
+            return_value=date(2023, 1, 15),
+        ):
             agent = ScraperAgent(config)
-            # The source will fail, but fetch_papers catches exceptions and returns empty list
             result = agent.run()
             assert result["success"] is True
             assert result["papers_fetched"] == 0
             assert result["message"] == "No papers fetched"
-            # No storage file should be created
             storage_file = data_dir / "papers_2023-01-15.json"
             assert not storage_file.exists()
 
@@ -212,17 +203,21 @@ def test_data_pipeline_storage_failure(temp_dir):
         mock_response.raise_for_status = Mock()
         mock_get.return_value = mock_response
 
-        with patch("arxiv_agent.agents.scraper_agent.date") as mock_date:
-            mock_date.today.return_value = date(2023, 1, 15)
-
-            # Mock JsonStorage.save_papers to fail
-            with patch("arxiv_agent.storage.json_storage.JsonStorage.save_papers") as mock_save:
+        with patch(
+            "arxiv_agent.agents.scraper_agent.get_current_date_in_timezone",
+            return_value=date(2023, 1, 15),
+        ):
+            with patch(
+                "arxiv_agent.storage.json_storage.JsonStorage.save_papers"
+            ) as mock_save:
                 mock_save.return_value = False
 
                 agent = ScraperAgent(config)
                 from arxiv_agent.utils.retry import RetryError
 
-                with pytest.raises(RetryError, match="Function run failed after 3 attempts"):
+                with pytest.raises(
+                    RetryError, match="Function run failed after 3 attempts"
+                ):
                     agent.run()
 
 
@@ -240,9 +235,7 @@ def test_data_pipeline_config_validation():
     assert agent.validate() is False
 
     # Missing sources section
-    config2 = {
-        "storage": {"data_dir": "./papers"}
-    }
+    config2 = {"storage": {"data_dir": "./papers"}}
 
     agent2 = ScraperAgent(config2)
     assert agent2.validate() is False

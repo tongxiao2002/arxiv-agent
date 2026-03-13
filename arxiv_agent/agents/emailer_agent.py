@@ -8,7 +8,7 @@ from datetime import date
 from typing import Any, Dict, Optional
 
 from arxiv_agent.agents.base import BaseAgent
-from arxiv_agent.config import EmailConfig
+from arxiv_agent.config import AdvancedConfig, EmailConfig
 from arxiv_agent.email import (
     SmtpEmailSender,
     render_digest_html,
@@ -20,6 +20,7 @@ from arxiv_agent.email import (
 )
 from arxiv_agent.sources.enhanced_paper import EnhancedPaper
 from arxiv_agent.storage.json_storage import JsonStorage
+from arxiv_agent.utils.timezone import get_current_date_in_timezone
 
 logger = logging.getLogger(__name__)
 
@@ -37,12 +38,16 @@ class EmailerAgent(BaseAgent):
         super().__init__(name="emailer", config=config)
         self.timezone = config.get("agent", {}).get("timezone", "Asia/Shanghai")
         self.email_config = EmailConfig(**config.get("email", {}))
+        self.advanced_config = AdvancedConfig(**config.get("advanced", {}))
         self.storage = storage or JsonStorage(
             data_dir=config.get("storage", {}).get("data_dir", "./papers")
         )
         self.sender = sender or SmtpEmailSender(
             self.email_config,
             smtp_password=os.getenv("SMTP_PASSWORD"),
+            timeout=self.advanced_config.request_timeout,
+            max_retries=self.advanced_config.max_retries,
+            retry_backoff_factor=self.advanced_config.retry_backoff_factor,
         )
 
     def run(self, *args: Any, **kwargs: Any) -> Dict[str, Any]:
@@ -67,9 +72,7 @@ class EmailerAgent(BaseAgent):
 
         papers = self.storage.load_papers(target_date)
         if any(not isinstance(paper, EnhancedPaper) for paper in papers):
-            message = (
-                f"Stored papers for {target_date} are not fully enhanced and cannot be emailed"
-            )
+            message = f"Stored papers for {target_date} are not fully enhanced and cannot be emailed"
             self.logger.error(message)
             return {
                 "success": False,
@@ -140,4 +143,4 @@ class EmailerAgent(BaseAgent):
         if target_date is not None and hasattr(target_date, "isoformat"):
             return target_date
 
-        return date.today()
+        return get_current_date_in_timezone(self.timezone)

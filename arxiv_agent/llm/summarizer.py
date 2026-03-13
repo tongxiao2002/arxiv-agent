@@ -4,8 +4,9 @@ import logging
 from typing import List, Optional, Tuple
 
 from arxiv_agent.config import LLMConfig
+from arxiv_agent.llm.provider_utils import get_provider_api_key, get_provider_env_var
 from arxiv_agent.sources.base_source import Paper
-from arxiv_agent.utils.retry import retry
+from arxiv_agent.utils.runtime import RuntimeOptions, call_with_retry
 
 logger = logging.getLogger(__name__)
 
@@ -37,8 +38,11 @@ def _format_summarization_prompt(paper: Paper) -> str:
     )
 
 
-@retry(max_retries=3, backoff_factor=2.0, jitter=True)
-def _call_openai_api_summarization(prompt: str, config: LLMConfig) -> str:
+def _call_openai_api_summarization(
+    prompt: str,
+    config: LLMConfig,
+    runtime_options: Optional[RuntimeOptions] = None,
+) -> str:
     """Make API call to OpenAI for summarization with retry logic."""
     try:
         from openai import OpenAI
@@ -47,30 +51,46 @@ def _call_openai_api_summarization(prompt: str, config: LLMConfig) -> str:
             "OpenAI library not installed. Install with: pip install openai"
         )
 
-    import os
-    api_key = os.getenv("OPENAI_API_KEY")
+    runtime = runtime_options or RuntimeOptions()
+    api_key = get_provider_api_key("openai")
     if not api_key:
-        raise SummarizationError("OPENAI_API_KEY environment variable not set")
+        env_var = get_provider_env_var("openai")
+        raise SummarizationError(f"{env_var} environment variable not set")
 
     client = OpenAI(api_key=api_key)
 
-    try:
-        response = client.chat.completions.create(
-            model=config.model,
-            messages=[
-                {"role": "system", "content": "You are a helpful research assistant."},
-                {"role": "user", "content": prompt},
-            ],
-            temperature=config.summarization_temperature,
-            max_tokens=300,
-        )
-        return response.choices[0].message.content or ""
-    except Exception as e:
-        raise SummarizationError(f"OpenAI API error: {e}", provider="openai")
+    def operation() -> str:
+        try:
+            response = client.chat.completions.create(
+                model=config.model,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "You are a helpful research assistant.",
+                    },
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=config.summarization_temperature,
+                max_tokens=300,
+                timeout=runtime.request_timeout,
+            )
+            return response.choices[0].message.content or ""
+        except Exception as exc:
+            raise SummarizationError(f"OpenAI API error: {exc}") from exc
+
+    return call_with_retry(
+        operation,
+        operation_name="_call_openai_api_summarization",
+        max_retries=runtime.max_retries,
+        backoff_factor=runtime.retry_backoff_factor,
+    )
 
 
-@retry(max_retries=3, backoff_factor=2.0, jitter=True)
-def _call_anthropic_api_summarization(prompt: str, config: LLMConfig) -> str:
+def _call_anthropic_api_summarization(
+    prompt: str,
+    config: LLMConfig,
+    runtime_options: Optional[RuntimeOptions] = None,
+) -> str:
     """Make API call to Anthropic for summarization with retry logic."""
     try:
         import anthropic
@@ -79,31 +99,40 @@ def _call_anthropic_api_summarization(prompt: str, config: LLMConfig) -> str:
             "Anthropic library not installed. Install with: pip install anthropic"
         )
 
-    import os
-    api_key = os.getenv("ANTHROPIC_API_KEY")
+    runtime = runtime_options or RuntimeOptions()
+    api_key = get_provider_api_key("anthropic")
     if not api_key:
-        raise SummarizationError("ANTHROPIC_API_KEY environment variable not set")
+        env_var = get_provider_env_var("anthropic")
+        raise SummarizationError(f"{env_var} environment variable not set")
 
     client = anthropic.Anthropic(api_key=api_key)
 
-    try:
-        response = client.messages.create(
-            model=config.model,
-            max_tokens=300,
-            temperature=config.summarization_temperature,
-            system="You are a helpful research assistant.",
-            messages=[
-                {"role": "user", "content": prompt}
-            ],
-        )
-        return response.content[0].text
-    except Exception as e:
-        raise SummarizationError(f"Anthropic API error: {e}", provider="anthropic")
+    def operation() -> str:
+        try:
+            response = client.messages.create(
+                model=config.model,
+                max_tokens=300,
+                temperature=config.summarization_temperature,
+                system="You are a helpful research assistant.",
+                messages=[{"role": "user", "content": prompt}],
+                timeout=runtime.request_timeout,
+            )
+            return response.content[0].text
+        except Exception as exc:
+            raise SummarizationError(f"Anthropic API error: {exc}") from exc
+
+    return call_with_retry(
+        operation,
+        operation_name="_call_anthropic_api_summarization",
+        max_retries=runtime.max_retries,
+        backoff_factor=runtime.retry_backoff_factor,
+    )
 
 
 def summarize_abstract(
     paper: Paper,
     config: LLMConfig,
+    runtime_options: Optional[RuntimeOptions] = None,
 ) -> str:
     """
     Generate a concise 2-3 sentence summary of a paper's abstract using LLM.
@@ -130,9 +159,9 @@ def summarize_abstract(
     provider = config.provider.lower()
     try:
         if provider == "openai":
-            summary = _call_openai_api_summarization(prompt, config)
+            summary = _call_openai_api_summarization(prompt, config, runtime_options)
         elif provider == "anthropic":
-            summary = _call_anthropic_api_summarization(prompt, config)
+            summary = _call_anthropic_api_summarization(prompt, config, runtime_options)
         elif provider == "local":
             # Local provider not yet implemented
             raise SummarizationError(

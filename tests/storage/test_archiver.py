@@ -19,8 +19,11 @@ def create_daily_file(data_dir: Path, file_date: date, paper_count: int = 1):
     data = {
         "date": file_date.isoformat(),
         "count": paper_count,
-        "papers": [{"title": f"Paper {i}", "abstract": "", "authors": []} for i in range(paper_count)],
-        "saved_at": "2023-01-01T00:00:00"
+        "papers": [
+            {"title": f"Paper {i}", "abstract": "", "authors": []}
+            for i in range(paper_count)
+        ],
+        "saved_at": "2023-01-01T00:00:00",
     }
 
     with open(file_path, "w") as f:
@@ -241,8 +244,10 @@ def test_cleanup_old_archives(temp_dir):
         def fromisoformat(cls, date_str):
             return date.fromisoformat(date_str)
 
-    with patch('arxiv_agent.storage.archiver.date', MockDate):
-        deleted_count = archiver.cleanup_old_archives(max_archive_age_days=365*2)  # 2 years
+    with patch("arxiv_agent.storage.archiver.date", MockDate):
+        deleted_count = archiver.cleanup_old_archives(
+            max_archive_age_days=365 * 2
+        )  # 2 years
         # Archives from 2020 should be deleted (1), others kept
         assert deleted_count == 1
         assert not (archive_dir / "papers_2020-01.tar.gz").exists()

@@ -4,18 +4,17 @@ import json
 from unittest.mock import Mock, patch
 
 import pytest
-from arxiv_agent.utils.retry import RetryError
 
 from arxiv_agent.config import LLMConfig
 from arxiv_agent.llm.classifier import (
-    LLMError,
     ClassificationError,
+    LLMConfigurationError,
+    LLMError,
     ProviderNotSupportedError,
-    classify_paper,
     batch_classify_papers,
+    classify_paper,
 )
 from arxiv_agent.sources.base_source import Paper
-
 
 # Sample test data
 SAMPLE_PAPER = Paper(
@@ -32,7 +31,11 @@ SAMPLE_TOPICS = ["machine learning", "natural language processing", "computer vi
 
 def test_classify_paper_openai_success():
     """Test successful classification with OpenAI provider."""
-    config = LLMConfig(provider="openai", model="gpt-4-turbo-preview", classification_temperature=0.1)
+    config = LLMConfig(
+        provider="openai",
+        model="gpt-4o-mini",
+        classification_temperature=0.1,
+    )
 
     mock_response = {
         "relevance_score": 0.85,
@@ -48,14 +51,21 @@ def test_classify_paper_openai_success():
 
         assert result["relevance_score"] == 0.85
         assert result["is_relevant"] is True
-        assert set(result["matched_topics"]) == {"machine learning", "natural language processing"}
+        assert set(result["matched_topics"]) == {
+            "machine learning",
+            "natural language processing",
+        }
         assert "classification_reason" in result
         mock_api.assert_called_once()
 
 
 def test_classify_paper_anthropic_success():
     """Test successful classification with Anthropic provider."""
-    config = LLMConfig(provider="anthropic", model="claude-3-opus-20240229", classification_temperature=0.1)
+    config = LLMConfig(
+        provider="anthropic",
+        model="claude-3-5-haiku-latest",
+        classification_temperature=0.1,
+    )
 
     mock_response = {
         "relevance_score": 0.6,
@@ -79,7 +89,9 @@ def test_classify_paper_provider_not_supported():
     """Test classification with unsupported provider."""
     config = LLMConfig(provider="local", model="local-model")
 
-    with pytest.raises(ProviderNotSupportedError, match="Local provider not yet implemented"):
+    with pytest.raises(
+        ProviderNotSupportedError, match="Local provider not yet implemented"
+    ):
         classify_paper(SAMPLE_PAPER, config, SAMPLE_TOPICS)
 
 
@@ -109,7 +121,9 @@ def test_classify_paper_no_topics():
     """Test classification with empty topics list."""
     config = LLMConfig(provider="openai")
 
-    with pytest.raises(ClassificationError, match="No topics provided for classification"):
+    with pytest.raises(
+        ClassificationError, match="No topics provided for classification"
+    ):
         classify_paper(SAMPLE_PAPER, config, [])
 
 
@@ -131,7 +145,9 @@ def test_classify_paper_invalid_json_response():
     with patch("arxiv_agent.llm.classifier._call_openai_api") as mock_api:
         mock_api.return_value = "Not a JSON response"
 
-        with pytest.raises(ClassificationError, match="Failed to parse classification response"):
+        with pytest.raises(
+            ClassificationError, match="Failed to parse classification response"
+        ):
             classify_paper(SAMPLE_PAPER, config, SAMPLE_TOPICS)
 
 
@@ -146,7 +162,9 @@ def test_classify_paper_missing_fields_in_response():
     with patch("arxiv_agent.llm.classifier._call_openai_api") as mock_api:
         mock_api.return_value = json.dumps(incomplete_response)
 
-        with pytest.raises(ClassificationError, match="Missing field in classification response"):
+        with pytest.raises(
+            ClassificationError, match="Missing field in classification response"
+        ):
             classify_paper(SAMPLE_PAPER, config, SAMPLE_TOPICS)
 
 
@@ -163,7 +181,9 @@ def test_classify_paper_invalid_relevance_score():
     with patch("arxiv_agent.llm.classifier._call_openai_api") as mock_api:
         mock_api.return_value = json.dumps(invalid_response)
 
-        with pytest.raises(ClassificationError, match="relevance_score must be between 0 and 1"):
+        with pytest.raises(
+            ClassificationError, match="relevance_score must be between 0 and 1"
+        ):
             classify_paper(SAMPLE_PAPER, config, SAMPLE_TOPICS)
 
 
@@ -233,7 +253,12 @@ def test_batch_classify_papers_with_failures():
 
     with patch("arxiv_agent.llm.classifier.classify_paper") as mock_classify:
         mock_classify.side_effect = [
-            {"relevance_score": 0.8, "is_relevant": True, "matched_topics": [], "classification_reason": ""},
+            {
+                "relevance_score": 0.8,
+                "is_relevant": True,
+                "matched_topics": [],
+                "classification_reason": "",
+            },
             ClassificationError("Missing abstract"),
         ]
 
@@ -249,9 +274,11 @@ def test_openai_api_key_missing():
     config = LLMConfig(provider="openai")
 
     with patch.dict("os.environ", {}, clear=True):
-        with patch("arxiv_agent.llm.classifier._get_openai_api_key", return_value=None):
-            with pytest.raises(RetryError, match="Function _call_openai_api failed after"):
-                classify_paper(SAMPLE_PAPER, config, SAMPLE_TOPICS)
+        with pytest.raises(
+            LLMConfigurationError,
+            match="OPENAI_API_KEY environment variable not set",
+        ):
+            classify_paper(SAMPLE_PAPER, config, SAMPLE_TOPICS)
 
 
 def test_anthropic_api_key_missing():
@@ -259,17 +286,21 @@ def test_anthropic_api_key_missing():
     config = LLMConfig(provider="anthropic")
 
     with patch.dict("os.environ", {}, clear=True):
-        with patch("arxiv_agent.llm.classifier._get_anthropic_api_key", return_value=None):
-            with pytest.raises(RetryError, match="Function _call_anthropic_api failed after"):
-                classify_paper(SAMPLE_PAPER, config, SAMPLE_TOPICS)
+        with pytest.raises(
+            LLMConfigurationError,
+            match="ANTHROPIC_API_KEY environment variable not set",
+        ):
+            classify_paper(SAMPLE_PAPER, config, SAMPLE_TOPICS)
 
 
 def test_openai_library_not_installed():
     """Test classification when OpenAI library is not installed."""
     config = LLMConfig(provider="openai")
 
-    with patch("arxiv_agent.llm.classifier._get_openai_api_key", return_value="dummy-key"):
-        with patch("arxiv_agent.llm.classifier._call_openai_api", side_effect=ImportError):
+    with patch.dict("os.environ", {"OPENAI_API_KEY": "dummy-key"}):
+        with patch(
+            "arxiv_agent.llm.classifier._call_openai_api", side_effect=ImportError
+        ):
             with pytest.raises(ImportError):
                 classify_paper(SAMPLE_PAPER, config, SAMPLE_TOPICS)
 
@@ -278,7 +309,10 @@ def test_anthropic_library_not_installed():
     """Test classification when Anthropic library is not installed."""
     config = LLMConfig(provider="anthropic")
 
-    with patch("arxiv_agent.llm.classifier._get_anthropic_api_key", return_value="dummy-key"):
-        with patch("arxiv_agent.llm.classifier._call_anthropic_api", side_effect=ImportError):
+    with patch.dict("os.environ", {"ANTHROPIC_API_KEY": "dummy-key"}):
+        with patch(
+            "arxiv_agent.llm.classifier._call_anthropic_api",
+            side_effect=ImportError,
+        ):
             with pytest.raises(ImportError):
                 classify_paper(SAMPLE_PAPER, config, SAMPLE_TOPICS)

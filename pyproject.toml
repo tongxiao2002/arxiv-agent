@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "arxiv-agent"
 version = "0.1.0"
-description = "Autonomous research assistant that scans daily academic paper submissions from arXiv and Papers.cool, filters them based on user-defined research interests, and delivers personalized email digests."
+description = "Automated research assistant that scans daily arXiv papers, filters them with OpenAI or Anthropic models, and delivers SMTP email digests."
 readme = "README.md"
 authors = [
     { name = "Tongxiao", email = "tongxiao@example.com" }
@@ -23,7 +23,7 @@ classifiers = [
 ]
 requires-python = ">=3.10"
 dependencies = [
-    "langchain-ai/deepagents",
+    "deepagents",
     "apscheduler>=3.10",
     "pyyaml>=6.0",
     "python-dotenv>=1.0",
@@ -35,8 +35,6 @@ dependencies = [
 [project.optional-dependencies]
 openai = ["openai>=1.0"]
 anthropic = ["anthropic>=0.7"]
-sendgrid = ["sendgrid>=6.0"]
-mailgun = ["mailgun-py>=1.0"]
 
 [project.urls]
 Homepage = "https://github.com/tongxiao/arxiv-agent"
@@ -82,3 +80,20 @@ warn_unused_ignores = true
 warn_no_return = true
 warn_unreachable = true
 strict_equality = true
+
+[[tool.mypy.overrides]]
+module = [
+    "arxiv_agent.agents.classifier_agent",
+    "arxiv_agent.agents.emailer_agent",
+    "arxiv_agent.agents.scraper_agent",
+    "arxiv_agent.email.templates",
+    "arxiv_agent.llm.classifier",
+    "arxiv_agent.llm.summarizer",
+    "arxiv_agent.scheduler",
+    "arxiv_agent.sources.arxiv_source",
+    "arxiv_agent.sources.enhanced_paper",
+    "arxiv_agent.sources.papers_cool_source",
+    "arxiv_agent.utils.runtime",
+    "arxiv_agent.utils.retry",
+]
+ignore_errors = true

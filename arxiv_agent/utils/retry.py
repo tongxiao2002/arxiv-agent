@@ -16,6 +16,13 @@ class RetryError(Exception):
         self.last_exception = last_exception
         super().__init__(message)
 
+    def __str__(self) -> str:
+        """Include the final underlying exception when available."""
+        message = super().__str__()
+        if self.last_exception is None:
+            return message
+        return f"{message}. Last error: {self.last_exception}"
+
 
 def retry(
     max_retries: int = 5,

@@ -24,7 +24,9 @@ class Archiver:
         self.data_dir = Path(data_dir)
         self.archive_dir = Path(archive_dir)
         self.archive_dir.mkdir(parents=True, exist_ok=True)
-        logger.info(f"Initialized archiver: data_dir={data_dir}, archive_dir={archive_dir}")
+        logger.info(
+            f"Initialized archiver: data_dir={data_dir}, archive_dir={archive_dir}"
+        )
 
     def _get_archive_path(self, year: int, month: int) -> Path:
         """
@@ -147,7 +149,9 @@ class Archiver:
         archives.sort(reverse=True)  # Newest first
         return archives
 
-    def extract_archive(self, archive_path: Path, extract_dir: Optional[Path] = None) -> bool:
+    def extract_archive(
+        self, archive_path: Path, extract_dir: Optional[Path] = None
+    ) -> bool:
         """
         Extract an archive to a directory.
 

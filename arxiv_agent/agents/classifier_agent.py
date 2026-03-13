@@ -2,15 +2,17 @@
 
 import logging
 from datetime import date
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 from arxiv_agent.agents.base import BaseAgent
-from arxiv_agent.config import LLMConfig
+from arxiv_agent.config import AdvancedConfig, LLMConfig
 from arxiv_agent.llm import classify_paper, summarize_abstract
 from arxiv_agent.sources.base_source import Paper
 from arxiv_agent.sources.enhanced_paper import EnhancedPaper
 from arxiv_agent.storage.json_storage import JsonStorage
-from arxiv_agent.utils.retry import retry
+from arxiv_agent.utils.retry import RetryError, retry
+from arxiv_agent.utils.runtime import RuntimeOptions, describe_retry_error
+from arxiv_agent.utils.timezone import get_current_date_in_timezone
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +32,8 @@ class ClassifierAgent(BaseAgent):
         self.llm_config = None
         self.topics = []
         self.timezone = config.get("agent", {}).get("timezone", "Asia/Shanghai")
+        self.advanced_config = AdvancedConfig(**config.get("advanced", {}))
+        self.runtime_options = RuntimeOptions.from_mapping(config.get("advanced", {}))
         self._setup_llm()
         self._setup_storage()
         self._setup_topics()
@@ -38,14 +42,18 @@ class ClassifierAgent(BaseAgent):
         """Set up LLM configuration."""
         llm_config_dict = self.config.get("llm", {})
         self.llm_config = LLMConfig(**llm_config_dict)
-        logger.info(f"Configured LLM provider: {self.llm_config.provider}, model: {self.llm_config.model}")
+        logger.info(
+            "Configured LLM provider: %s, model: %s",
+            self.llm_config.provider,
+            self.llm_config.model,
+        )
 
     def _setup_storage(self) -> None:
         """Set up JSON storage."""
         storage_config = self.config.get("storage", {})
         data_dir = storage_config.get("data_dir", "./papers")
         self.storage = JsonStorage(data_dir=data_dir)
-        logger.info(f"Configured classifier agent storage at {data_dir}")
+        logger.info("Configured classifier agent storage at %s", data_dir)
 
     def _setup_topics(self) -> None:
         """Set up research topics."""
@@ -53,7 +61,7 @@ class ClassifierAgent(BaseAgent):
         if not self.topics:
             logger.warning("No topics configured for classification")
         else:
-            logger.info(f"Configured {len(self.topics)} topics for classification")
+            logger.info("Configured %s topics for classification", len(self.topics))
 
     @retry(max_retries=3, backoff_factor=2.0, jitter=True)
     def run(self, *args: Any, **kwargs: Any) -> Dict[str, Any]:
@@ -77,12 +85,12 @@ class ClassifierAgent(BaseAgent):
 
         # Determine target date (default: today)
         target_date = self._parse_target_date(*args, **kwargs)
-        logger.info(f"Processing papers for date: {target_date}")
+        logger.info("Processing papers for date: %s", target_date)
 
         # Load papers for target date
         papers = self.storage.load_papers(target_date)
         if not papers:
-            logger.warning(f"No papers found for date {target_date}")
+            logger.warning("No papers found for date %s", target_date)
             return {
                 "success": True,
                 "papers_processed": 0,
@@ -93,12 +101,11 @@ class ClassifierAgent(BaseAgent):
                 "message": "No papers to process",
             }
 
-        logger.info(f"Loaded {len(papers)} papers for classification")
+        logger.info("Loaded %s papers for classification", len(papers))
 
-        # Filter out papers that are already enhanced (optional)
-        papers_to_process = self._filter_non_enhanced_papers(papers)
-        if len(papers_to_process) != len(papers):
-            logger.info(f"Skipping {len(papers) - len(papers_to_process)} already enhanced papers")
+        already_enhanced, papers_to_process = self._split_enhanced_papers(papers)
+        if already_enhanced:
+            logger.info("Skipping %s already enhanced papers", len(already_enhanced))
 
         if not papers_to_process:
             logger.info("All papers already enhanced")
@@ -108,12 +115,17 @@ class ClassifierAgent(BaseAgent):
                 "papers_classified": 0,
                 "papers_summarized": 0,
                 "enhanced_papers": 0,
+                "papers_skipped": len(already_enhanced),
                 "errors": [],
                 "message": "All papers already enhanced",
             }
 
         # Process papers
-        results = self._process_papers(papers_to_process, target_date)
+        results = self._process_papers(
+            papers_to_process,
+            target_date,
+            already_enhanced=already_enhanced,
+        )
 
         logger.info(
             f"Classifier agent completed: "
@@ -136,18 +148,22 @@ class ClassifierAgent(BaseAgent):
             if target_date is not None and hasattr(target_date, "isoformat"):
                 return target_date
 
-        return date.today()
+        return get_current_date_in_timezone(self.timezone)
 
-    def _filter_non_enhanced_papers(self, papers: List[Paper]) -> List[Paper]:
-        """Filter out papers that are already enhanced."""
-        # For now, we process all papers. Enhanced detection will be added
-        # when storage supports enhanced flag.
-        return papers
+    def _split_enhanced_papers(
+        self, papers: List[Paper]
+    ) -> Tuple[List[EnhancedPaper], List[Paper]]:
+        """Split stored papers into already-enhanced and pending items."""
+        enhanced = [paper for paper in papers if isinstance(paper, EnhancedPaper)]
+        pending = [paper for paper in papers if not isinstance(paper, EnhancedPaper)]
+        return enhanced, pending
 
     def _process_papers(
         self,
         papers: List[Paper],
         target_date: date,
+        *,
+        already_enhanced: List[EnhancedPaper],
     ) -> Dict[str, Any]:
         """Process papers through classification and summarization."""
         enhanced_papers = []
@@ -157,15 +173,27 @@ class ClassifierAgent(BaseAgent):
 
         for i, paper in enumerate(papers):
             paper_id = paper.arxiv_id or paper.paper_id or f"paper-{i}"
-            logger.info(f"Processing paper {i+1}/{len(papers)}: {paper.title[:100]}...")
+            logger.info(
+                "Processing paper %s/%s: %s...",
+                i + 1,
+                len(papers),
+                paper.title[:100],
+            )
 
             try:
-                # Classify paper
-                classification_result = classify_paper(paper, self.llm_config, self.topics)
+                classification_result = classify_paper(
+                    paper,
+                    self.llm_config,
+                    self.topics,
+                    self.runtime_options,
+                )
                 classified_count += 1
 
-                # Summarize abstract
-                summary = summarize_abstract(paper, self.llm_config)
+                summary = summarize_abstract(
+                    paper,
+                    self.llm_config,
+                    self.runtime_options,
+                )
                 summarized_count += 1
 
                 # Create enhanced paper
@@ -174,19 +202,28 @@ class ClassifierAgent(BaseAgent):
                     relevance_score=classification_result["relevance_score"],
                     is_relevant=classification_result["is_relevant"],
                     matched_topics=classification_result["matched_topics"],
-                    classification_reason=classification_result["classification_reason"],
+                    classification_reason=classification_result[
+                        "classification_reason"
+                    ],
                     summary=summary,
                 )
                 enhanced_papers.append(enhanced_paper)
 
                 logger.debug(
-                    f"Paper '{paper.title[:50]}...' classified: "
-                    f"relevant={classification_result['is_relevant']}, "
-                    f"score={classification_result['relevance_score']:.2f}"
+                    "Paper '%s...' classified: relevant=%s, score=%.2f",
+                    paper.title[:50],
+                    classification_result["is_relevant"],
+                    classification_result["relevance_score"],
                 )
 
-            except Exception as e:
-                error_msg = f"Failed to process paper {paper_id}: {e}"
+            except Exception as exc:
+                if isinstance(exc, RetryError):
+                    error_msg = describe_retry_error(
+                        exc,
+                        f"Failed to process paper {paper_id}",
+                    )
+                else:
+                    error_msg = f"Failed to process paper {paper_id}: {exc}"
                 logger.error(error_msg)
                 errors.append(error_msg)
                 # Continue with next paper
@@ -194,11 +231,16 @@ class ClassifierAgent(BaseAgent):
 
         # Save enhanced papers
         enhanced_saved = 0
-        if enhanced_papers:
-            success = self.storage.save_papers(target_date, enhanced_papers)
+        papers_to_save = [*already_enhanced, *enhanced_papers]
+        if papers_to_save:
+            success = self.storage.save_papers(target_date, papers_to_save)
             if success:
                 enhanced_saved = len(enhanced_papers)
-                logger.info(f"Saved {enhanced_saved} enhanced papers")
+                logger.info(
+                    "Saved %s newly enhanced papers (%s total retained)",
+                    enhanced_saved,
+                    len(papers_to_save),
+                )
             else:
                 errors.append("Failed to save enhanced papers to storage")
 
@@ -208,6 +250,7 @@ class ClassifierAgent(BaseAgent):
             "papers_classified": classified_count,
             "papers_summarized": summarized_count,
             "enhanced_papers": enhanced_saved,
+            "papers_skipped": len(already_enhanced),
             "errors": errors,
             "target_date": target_date.isoformat(),
         }
@@ -238,6 +281,7 @@ class ClassifierAgent(BaseAgent):
         # Check for required API keys (only if provider is not local)
         if provider in ["openai", "anthropic"]:
             import os
+
             if provider == "openai" and not os.getenv("OPENAI_API_KEY"):
                 logger.error("OPENAI_API_KEY environment variable not set")
                 return False

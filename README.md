@@ -3,61 +3,57 @@
 [![Python Version](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-**Automated research assistant that scans daily academic papers from arXiv and Papers.cool, filters them based on your research interests, and delivers personalized SMTP email digests.**
+Arxiv-Agent scans daily arXiv papers, classifies them against your research topics with an OpenAI or Anthropic model, stores the enhanced results locally, and sends an SMTP digest on a schedule.
 
-## Features
+## Supported Today
 
-- **Automated Daily Scanning**: Fetches papers at midnight (configurable timezone)
-- **Intelligent Filtering**: Uses LLMs for relevance classification (OpenAI, Anthropic, or local models)
-- **Concise Summaries**: Generates 2-3 sentence LLM summaries for quick scanning
-- **Email Digests**: Sends formatted daily emails at 9:00 AM (configurable)
-- **Multiple Sources**: Supports arXiv.org (non-CS) and Papers.cool (CS preferred)
-- **Robust Operation**: Exponential backoff retry, error handling, daily logging
-- **Extensible Architecture**: Built on LangChain DeepAgents framework
+- `sources.primary: arxiv`
+- `llm.provider: openai` or `anthropic`
+- SMTP email delivery
+- Foreground scheduling with APScheduler
+- Local JSON storage, archiving, and rotating logs
+
+## Not Yet Implemented
+
+- `sources.primary: papers_cool`
+- `llm.provider: local`
+- Non-SMTP delivery providers
+
+Those options still exist in config examples as future-facing placeholders, but the CLI now fails fast if you select them.
 
 ## Quick Start
 
-### 1. Installation
+### 1. Install
 
 ```bash
-# Clone the repository
 git clone https://github.com/tongxiao/arxiv-agent.git
 cd arxiv-agent
-
-# Install dependencies
 pip install -r requirements.txt
-
-# For development, also install development dependencies
 pip install -r requirements-dev.txt
 ```
 
-### 2. Configuration
+### 2. Configure
 
 ```bash
-# Copy configuration templates
 cp config.yaml.example config.yaml
 cp .env.example .env
-
-# Edit config.yaml with your preferences
-# Edit .env with your API keys
 ```
 
-**Example `config.yaml`** (see `config.yaml.example` for full options):
+Minimal supported `config.yaml`:
 
 ```yaml
 agent:
-  name: "arxiv-agent"
-  timezone: "Asia/Shanghai"  # Default: UTC+8
+  timezone: "Asia/Shanghai"
 
 sources:
   primary: "arxiv"
   arxiv:
-    categories: ["cs", "physics", "math"]
+    categories: ["cs", "stat"]
+    max_papers: 25
 
 topics:
   - "machine learning"
-  - "deep learning"
-  - "natural language processing"
+  - "language models"
 
 schedule:
   scan_time: "00:00"
@@ -65,238 +61,103 @@ schedule:
 
 llm:
   provider: "openai"
-  model: "gpt-4-turbo-preview"
+  model: "gpt-4o-mini"
 
 email:
   smtp_host: "smtp.gmail.com"
   smtp_port: 587
   smtp_security: "starttls"
   smtp_username: "your-email@example.com"
-  from_email: "arxiv-agent@example.com"
+  from_email: "your-email@example.com"
   to_emails: ["your-email@example.com"]
+  subject_template: "Daily Papers Digest - {date}"
+
+storage:
+  data_dir: "./papers"
+  archive_dir: "./archive"
+  log_dir: "./logs"
+  retention_days: 30
+
+advanced:
+  max_retries: 5
+  retry_backoff_factor: 2.0
+  request_timeout: 30
+  log_level: "INFO"
 ```
 
-**Required secrets in `.env`**:
+Required `.env` values:
 
 ```bash
-# Choose one LLM provider
-OPENAI_API_KEY="sk-..."          # If using OpenAI
-# ANTHROPIC_API_KEY="sk-ant-..."  # If using Anthropic
-# DEEPSEEK_API_KEY="sk-..."       # If using DeepSeek
+# Pick one LLM provider
+OPENAI_API_KEY="sk-..."
+# ANTHROPIC_API_KEY="sk-ant-..."
 
-# SMTP password for authenticated delivery
+# Required when email.smtp_username is set
 SMTP_PASSWORD="app-password-or-smtp-password"
 ```
 
-### 3. Run the Agent
+Optional `.env` overrides:
 
 ```bash
-# Test configuration
-python -m arxiv_agent.cli run-once --dry-run
+TZ="Asia/Shanghai"
+LOG_LEVEL="DEBUG"
+MAX_RETRIES="5"
+RETRY_BACKOFF_FACTOR="2"
+REQUEST_TIMEOUT="30"
+```
 
-# Start scheduled agent (runs in foreground)
+### 3. Dry Run First
+
+```bash
+python -m arxiv_agent.cli run-once --dry-run --config config.yaml
+```
+
+This still performs scraping and LLM classification, but it does not send a real email.
+
+### 4. Run
+
+```bash
 python -m arxiv_agent.cli start
-
-# Run one-time scan and email
 python -m arxiv_agent.cli run-once
-
-# Show version
 python -m arxiv_agent.cli version
 ```
 
-## Project Structure
+## Runtime Notes
 
-```
-arxiv-agent/
-├── arxiv_agent/               # Source code
-│   ├── agents/               # Agent implementations
-│   ├── sources/              # Paper source integrations
-│   ├── storage/              # Data persistence
-│   ├── email/                # Email functionality
-│   ├── llm/                  # LLM integration
-│   └── utils/                # Utilities (logging, retry, etc.)
-├── config.yaml.example       # Configuration template
-├── .env.example              # Environment variables template
-├── logs/                     # Daily log files (auto-created)
-├── papers/                   # JSON paper storage (auto-created)
-└── archive/                  # Monthly archives (auto-created)
-```
+- Logs are written to `storage.log_dir` and honor `advanced.log_level`.
+- `advanced.max_retries`, `advanced.retry_backoff_factor`, and `advanced.request_timeout` now apply to source fetches, LLM calls, and SMTP delivery retries.
+- The app logs an effective runtime summary at startup without printing secrets.
+- Re-running classification for a day skips papers that are already stored as enhanced results.
 
-## Configuration Details
+## Configuration Reference
 
-### Agent Configuration
+- `agent.timezone`: IANA timezone used for date selection and scheduling.
+- `sources.primary`: Supported value is currently `arxiv`.
+- `topics`: At least one non-empty topic is required.
+- `llm.provider`: Supported values are `openai` and `anthropic`.
+- `llm.model`: Set this to a model available in your provider account.
+- `email.subject_template`: Must include `{date}`.
+- `storage.log_dir`: Directory used by the CLI log setup.
+- `advanced.*`: Runtime retry, timeout, and log verbosity controls.
 
-- **name**: Identifier for the agent (default: "arxiv-agent")
-- **timezone**: Timezone for scheduling (default: "Asia/Shanghai")
+## Operations and Troubleshooting
 
-### Sources Configuration
-
-- **primary**: Primary source ("arxiv" or "papers_cool")
-- **arxiv.categories**: arXiv categories to scan (e.g., ["cs", "physics", "math"])
-- **papers_cool.categories**: Papers.cool categories (CS subfields)
-
-### Topics Configuration
-
-List of research topics for LLM classification. Papers are evaluated against these topics.
-
-### Schedule Configuration
-
-- **scan_time**: Time to fetch and classify papers (24-hour format)
-- **email_time**: Time to send email digest (24-hour format)
-
-### LLM Configuration
-
-- **provider**: LLM provider ("openai", "anthropic", "local")
-- **model**: Model name (e.g., "gpt-4-turbo-preview", "claude-3-opus")
-- **classification_temperature**: Temperature for relevance classification (default: 0.1)
-- **summarization_temperature**: Temperature for abstract summarization (default: 0.3)
-
-### Email Configuration
-
-- **smtp_host**: SMTP server hostname
-- **smtp_port**: SMTP server port
-- **smtp_security**: Connection security ("starttls", "ssl", or "none")
-- **smtp_username**: SMTP username for authenticated delivery
-- **from_email**: Sender email address
-- **to_emails**: List of recipient email addresses
-- **subject_template**: Email subject template (must include `{date}`)
-
-### Storage Configuration
-
-- **data_dir**: Directory for daily JSON files (default: "./papers")
-- **archive_dir**: Directory for monthly archives (default: "./archive")
-- **log_dir**: Directory for log files (default: "./logs")
-- **retention_days**: Days to keep data before archiving (default: 30)
-
-## Architecture
-
-Arxiv-Agent uses an agent-based architecture built on the LangChain DeepAgents framework:
-
-1. **Scraper Agent**: Fetches papers from configured sources
-2. **Classifier Agent**: Uses LLM for relevance classification and summarization
-3. **Emailer Agent**: Sends formatted email notifications
-4. **Supervisor Agent**: Coordinates agent execution and handles scheduling
-
-The system runs two separate scheduled jobs:
-- **Scan Job (00:00)**: Fetches, classifies, summarizes, and stores papers
-- **Email Job (09:00)**: Reads stored papers and sends email digest
+- Operational guidance: [docs/operations.md](docs/operations.md)
+- Troubleshooting guide: [docs/troubleshooting.md](docs/troubleshooting.md)
 
 ## Development
 
-### Setup Development Environment
-
 ```bash
-# Install development dependencies
-pip install -r requirements-dev.txt
-
-# Install pre-commit hooks
-pre-commit install
-
-# Run tests
 pytest
-
-# Format code
 black arxiv_agent tests
 isort arxiv_agent tests
-
-# Type checking
 mypy arxiv_agent
 ```
 
-### Running Tests
+Useful targeted checks:
 
 ```bash
-# Run all tests
-pytest
-
-# Run specific test file
 pytest tests/test_config.py -v
-
-# Run with coverage
-pytest --cov=arxiv_agent --cov-report=term-missing
+pytest tests/test_cli.py -v
+pytest tests/integration/test_notification_pipeline.py -v
 ```
-
-### Code Style
-
-- Follow [PEP 8](https://pep8.org/)
-- Use type hints throughout
-- Document public functions and classes
-- Write unit tests for new functionality
-
-### Project Conventions
-
-- **Modules**: `snake_case.py`
-- **Classes**: `PascalCase`
-- **Functions/Methods**: `snake_case`
-- **Constants**: `UPPER_SNAKE_CASE`
-- **Private members**: `_leading_underscore`
-
-## Deployment
-
-### Running as a Service
-
-For production deployment, consider running the agent as a system service:
-
-```ini
-# systemd service example (/etc/systemd/system/arxiv-agent.service)
-[Unit]
-Description=Arxiv-Agent Paper Discovery Service
-After=network.target
-
-[Service]
-Type=simple
-User=arxiv-agent
-WorkingDirectory=/opt/arxiv-agent
-ExecStart=/usr/bin/python -m arxiv_agent.cli start
-Restart=on-failure
-RestartSec=10
-
-[Install]
-WantedBy=multi-user.target
-```
-
-### Docker (Future)
-
-Docker support is planned for a future release.
-
-## Troubleshooting
-
-### Common Issues
-
-- **Missing SMTP password**: Set `SMTP_PASSWORD` in `.env` when `email.smtp_username` is configured.
-- **Scheduler timing looks off**: Confirm `agent.timezone`, `schedule.scan_time`, and `schedule.email_time` use the intended IANA timezone and 24-hour `HH:MM` format.
-
-1. **Configuration file not found**: Ensure `config.yaml` exists in the current directory
-2. **API key errors**: Verify API keys in `.env` are correct and have necessary permissions
-3. **Timezone issues**: Ensure timezone is valid (see [tz database](https://en.wikipedia.org/wiki/List_of_tz_database_time_zones))
-4. **Email delivery failures**: Check email service API keys and sender/recipient addresses
-
-### Logs
-
-Check the `./logs/` directory for daily log files:
-- `arxiv-agent.log`: Main log file with detailed information
-- `arxiv-agent-daily.log`: Daily rotating log file
-
-### Debug Mode
-
-Set `LOG_LEVEL="DEBUG"` in `.env` for detailed logging.
-
-## Contributing
-
-Contributions are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
-
-## License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## Acknowledgments
-
-- [LangChain DeepAgents](https://github.com/langchain-ai/deepagents) - Agent framework foundation
-- [arXiv API](https://arxiv.org/help/api) - Paper metadata
-- [Papers.cool](https://papers.cool) - CS paper aggregation
-
-## Support
-
-- **Issues**: [GitHub Issues](https://github.com/tongxiao/arxiv-agent/issues)
-- **Documentation**: This README and code comments
-- **Email**: tongxiao@example.com

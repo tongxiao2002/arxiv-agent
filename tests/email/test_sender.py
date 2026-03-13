@@ -3,8 +3,11 @@
 import smtplib
 from unittest.mock import Mock, patch
 
+import pytest
+
 from arxiv_agent.config import EmailConfig
 from arxiv_agent.email.sender import SmtpEmailSender
+from arxiv_agent.utils.retry import RetryError
 
 
 def make_email_config(**overrides):
@@ -27,7 +30,9 @@ def test_send_email_starttls_with_auth():
     config = make_email_config()
     smtp_client = Mock()
 
-    with patch("arxiv_agent.email.sender.smtplib.SMTP", return_value=smtp_client) as mock_smtp:
+    with patch(
+        "arxiv_agent.email.sender.smtplib.SMTP", return_value=smtp_client
+    ) as mock_smtp:
         sender = SmtpEmailSender(config, smtp_password="smtp-secret")
         result = sender.send_email(
             subject="Digest",
@@ -98,6 +103,32 @@ def test_send_email_retries_transient_failure():
                 text_body="Text body",
                 html_body="<p>HTML body</p>",
             )
+
+    assert smtp_client.send_message.call_count == 2
+
+
+def test_send_email_respects_retry_configuration():
+    """Test sender uses configured retry limits and preserves root cause."""
+    config = make_email_config()
+    smtp_client = Mock()
+    smtp_client.send_message.side_effect = smtplib.SMTPServerDisconnected(
+        "temporary disconnect"
+    )
+
+    with patch("arxiv_agent.email.sender.smtplib.SMTP", return_value=smtp_client):
+        with patch("arxiv_agent.utils.retry.time.sleep", return_value=None):
+            sender = SmtpEmailSender(
+                config,
+                smtp_password="smtp-secret",
+                max_retries=2,
+                retry_backoff_factor=1.0,
+            )
+            with pytest.raises(RetryError, match="temporary disconnect"):
+                sender.send_email(
+                    subject="Digest",
+                    text_body="Text body",
+                    html_body="<p>HTML body</p>",
+                )
 
     assert smtp_client.send_message.call_count == 2
 

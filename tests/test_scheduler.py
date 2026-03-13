@@ -14,7 +14,9 @@ def test_scheduler_registers_daily_jobs():
         Mock(id="daily_email"),
     ]
 
-    with patch("arxiv_agent.scheduler.BackgroundScheduler", return_value=mock_scheduler):
+    with patch(
+        "arxiv_agent.scheduler.BackgroundScheduler", return_value=mock_scheduler
+    ):
         scheduler = Scheduler("Asia/Shanghai")
         scheduler.start()
         job_ids = scheduler.configure_daily_jobs(
@@ -55,7 +57,9 @@ def test_scheduler_job_callbacks_are_wired():
     def email_job():
         observed.append("email")
 
-    with patch("arxiv_agent.scheduler.BackgroundScheduler", return_value=mock_scheduler):
+    with patch(
+        "arxiv_agent.scheduler.BackgroundScheduler", return_value=mock_scheduler
+    ):
         scheduler = Scheduler("Asia/Shanghai")
         scheduler.start()
         scheduler.configure_daily_jobs(

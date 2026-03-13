@@ -15,9 +15,7 @@ def render_digest_subject(
     timezone_name: str,
 ) -> str:
     """Render the digest subject from a configured template."""
-    return subject_template.format(
-        date=format_digest_date(target_date, timezone_name)
-    )
+    return subject_template.format(date=format_digest_date(target_date, timezone_name))
 
 
 def render_no_papers_subject(target_date, timezone_name: str) -> str:
@@ -32,12 +30,11 @@ def render_digest_text(
 ) -> str:
     """Render the plain-text digest body."""
     rendered_date = format_digest_date(target_date, timezone_name)
-    paper_sections = [_render_paper_text(index, paper) for index, paper in enumerate(papers, start=1)]
+    paper_sections = [
+        _render_paper_text(index, paper) for index, paper in enumerate(papers, start=1)
+    ]
     joined_sections = "\n\n".join(paper_sections)
-    return (
-        f"Daily papers digest for {rendered_date}\n\n"
-        f"{joined_sections}\n"
-    )
+    return f"Daily papers digest for {rendered_date}\n\n" f"{joined_sections}\n"
 
 
 def render_digest_html(

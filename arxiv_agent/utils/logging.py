@@ -2,10 +2,9 @@
 
 import logging
 import logging.handlers
-import os
 import sys
 from pathlib import Path
-from typing import Optional, Any
+from typing import Any
 
 
 def setup_logging(
@@ -87,7 +86,7 @@ def setup_logging(
         daily_handler.suffix = "%Y-%m-%d"
         root_logger.addHandler(daily_handler)
 
-        logging.info(f"Logging configured. Files will be written to {log_path}")
+        logging.info("Logging configured. Files will be written to %s", log_path)
 
     # Capture warnings from warnings module
     logging.captureWarnings(True)

@@ -1,7 +1,9 @@
 """Tests for Papers.cool source implementation."""
 
-import pytest
 from unittest.mock import Mock, patch
+
+import pytest
+import requests
 
 from arxiv_agent.sources.papers_cool_source import PapersCoolSource
 
@@ -56,7 +58,7 @@ def test_fetch_category_page(mock_get):
 @patch("arxiv_agent.sources.papers_cool_source.requests.get")
 def test_fetch_category_page_failure(mock_get):
     """Test handling of request failure after retries."""
-    mock_get.side_effect = Exception("Network error")
+    mock_get.side_effect = requests.RequestException("Network error")
 
     config = {"categories": ["cs.ai"]}
     source = PapersCoolSource(config)

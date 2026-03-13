@@ -9,11 +9,18 @@ from datetime import date
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from arxiv_agent.agents import ClassifierAgent, EmailerAgent, ScraperAgent, SupervisorAgent
+from arxiv_agent.agents import (
+    ClassifierAgent,
+    EmailerAgent,
+    ScraperAgent,
+    SupervisorAgent,
+)
 from arxiv_agent.config import Config
 from arxiv_agent.scheduler import Scheduler
 from arxiv_agent.storage.archiver import Archiver
 from arxiv_agent.utils.logging import setup_logging
+from arxiv_agent.utils.retry import RetryError
+from arxiv_agent.utils.runtime import describe_retry_error
 from arxiv_agent.utils.timezone import get_current_date_in_timezone
 
 logger = logging.getLogger(__name__)
@@ -136,12 +143,14 @@ Examples:
         return 1
 
     try:
-        setup_logging()
-
         if parsed_args.command in ["start", "run-once"]:
-            logger.info("Loading configuration from %s", parsed_args.config)
             config = Config.from_yaml(parsed_args.config)
             config.load_env()
+            setup_logging(
+                log_dir=config.storage.log_dir,
+                log_level=config.advanced.log_level,
+            )
+            _log_runtime_configuration(config, parsed_args.command)
 
             if not config.validate():
                 logger.error("Configuration validation failed")
@@ -159,6 +168,7 @@ Examples:
                 logger.error("Runtime configuration validation failed")
                 return 1
         else:
+            setup_logging(file=False)
             config = None
 
         if parsed_args.command == "start":
@@ -182,8 +192,38 @@ Examples:
         return 1
     except Exception as exc:
         logger.exception("Unexpected error: %s", exc)
-        print(f"Error: {exc}", file=sys.stderr)
+        if isinstance(exc, RetryError):
+            print(
+                f"Error: {describe_retry_error(exc, 'Operation failed')}",
+                file=sys.stderr,
+            )
+        else:
+            print(f"Error: {exc}", file=sys.stderr)
         return 1
+
+
+def _log_runtime_configuration(config: Config, command: str) -> None:
+    """Log the effective runtime configuration without leaking secrets."""
+    logger.info(
+        (
+            "Runtime configuration ready: command=%s timezone=%s source=%s "
+            "llm_provider=%s model=%s log_level=%s log_dir=%s data_dir=%s "
+            "archive_dir=%s scan_time=%s email_time=%s retries=%s timeout=%ss"
+        ),
+        command,
+        config.agent.timezone,
+        config.sources.primary,
+        config.llm.provider,
+        config.llm.model,
+        config.advanced.log_level.upper(),
+        config.storage.log_dir,
+        config.storage.data_dir,
+        config.storage.archive_dir,
+        config.schedule.scan_time,
+        config.schedule.email_time,
+        config.advanced.max_retries,
+        config.advanced.request_timeout,
+    )
 
 
 def _run_scan_workflow(config: Config, target_date: date) -> Dict[str, Any]:

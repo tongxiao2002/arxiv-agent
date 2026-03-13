@@ -70,8 +70,13 @@ def test_notification_pipeline_end_to_end(temp_dir, monkeypatch):
 
     smtp_client = Mock()
 
-    with patch("arxiv_agent.cli.get_current_date_in_timezone", return_value=target_date):
-        with patch("arxiv_agent.sources.arxiv_source.ArxivSource.fetch_papers", return_value=[sample_paper]):
+    with patch(
+        "arxiv_agent.cli.get_current_date_in_timezone", return_value=target_date
+    ):
+        with patch(
+            "arxiv_agent.sources.arxiv_source.ArxivSource.fetch_papers",
+            return_value=[sample_paper],
+        ):
             with patch(
                 "arxiv_agent.agents.classifier_agent.classify_paper",
                 return_value={
@@ -85,7 +90,10 @@ def test_notification_pipeline_end_to_end(temp_dir, monkeypatch):
                     "arxiv_agent.agents.classifier_agent.summarize_abstract",
                     return_value="Short summary.",
                 ):
-                    with patch("arxiv_agent.email.sender.smtplib.SMTP", return_value=smtp_client):
+                    with patch(
+                        "arxiv_agent.email.sender.smtplib.SMTP",
+                        return_value=smtp_client,
+                    ):
                         with patch("arxiv_agent.storage.archiver.date", MockDate):
                             result = run_once_command(config, dry_run=False)
 

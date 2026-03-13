@@ -69,7 +69,9 @@ class Scheduler:
         else:
             logger.warning("Scheduler is not running")
 
-    def add_job(self, func: Callable[..., Any], trigger: Any, **trigger_args: Any) -> Optional[str]:
+    def add_job(
+        self, func: Callable[..., Any], trigger: Any, **trigger_args: Any
+    ) -> Optional[str]:
         """Add a job to the scheduler."""
         if not self.scheduler:
             logger.error("Scheduler not started. Call start() first.")
@@ -79,7 +81,9 @@ class Scheduler:
         logger.info("Added job %s: %s", job.id, func.__name__)
         return job.id
 
-    def schedule_scan_job(self, func: Callable[..., Any], scan_time: str) -> Optional[str]:
+    def schedule_scan_job(
+        self, func: Callable[..., Any], scan_time: str
+    ) -> Optional[str]:
         """Register the daily scan job."""
         return self._schedule_daily_job(
             func=func,
@@ -88,7 +92,9 @@ class Scheduler:
             scheduled_time=scan_time,
         )
 
-    def schedule_email_job(self, func: Callable[..., Any], email_time: str) -> Optional[str]:
+    def schedule_email_job(
+        self, func: Callable[..., Any], email_time: str
+    ) -> Optional[str]:
         """Register the daily email job."""
         return self._schedule_daily_job(
             func=func,

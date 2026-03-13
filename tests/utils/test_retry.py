@@ -105,9 +105,7 @@ def test_retry_decorator_exhausts_retries(mock_sleep):
         always_failing_func()
 
     assert call_count == 3
-    assert "Function always_failing_func failed after 3 attempts" in str(
-        exc_info.value
-    )
+    assert "Function always_failing_func failed after 3 attempts" in str(exc_info.value)
     assert isinstance(exc_info.value.last_exception, RuntimeError)
     assert mock_sleep.call_count == 2  # Sleep after first two failures
 
@@ -144,6 +142,7 @@ def test_retry_decorator_custom_exception_types():
 @patch("arxiv_agent.utils.retry.time.sleep")
 def test_retry_decorator_respect_retry_after(mock_sleep):
     """Test retry decorator with Retry-After header."""
+
     class MockResponse:
         headers = {"Retry-After": "5"}
 
@@ -172,6 +171,7 @@ def test_retry_decorator_respect_retry_after(mock_sleep):
 @patch("arxiv_agent.utils.retry.time.sleep")
 def test_retry_decorator_no_respect_retry_after(mock_sleep):
     """Test retry decorator ignoring Retry-After header."""
+
     class MockResponse:
         headers = {"Retry-After": "5"}
 
@@ -257,6 +257,7 @@ def test_retry_context_exhausts_retries(mock_sleep):
 
 def test_retry_context_retry_after():
     """Test retry context manager with Retry-After header."""
+
     class MockResponse:
         headers = {"Retry-After": "10"}
 
@@ -306,5 +307,5 @@ def test_retry_error_initialization():
     original_exception = ValueError("Original error")
     retry_error = RetryError("All retries exhausted", original_exception)
 
-    assert str(retry_error) == "All retries exhausted"
+    assert str(retry_error) == "All retries exhausted. Last error: Original error"
     assert retry_error.last_exception == original_exception

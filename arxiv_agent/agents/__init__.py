@@ -1,11 +1,11 @@
 """Agents module for Arxiv-Agent."""
 
 from .base import (
+    DEEPAGENTS_AVAILABLE,
     AgentConfigurationError,
     AgentError,
     AgentExecutionError,
     BaseAgent,
-    DEEPAGENTS_AVAILABLE,
     DeepAgentMixin,
     ExampleAgent,
 )

@@ -9,14 +9,15 @@ agent:
 
 # Paper sources configuration
 sources:
-  primary: "arxiv"  # "arxiv" or "papers_cool"
+  primary: "arxiv"  # Supported today: "arxiv"
+  # "papers_cool" remains a planned future source and will fail fast at startup.
   arxiv:
     # arXiv categories to scan (see https://arxiv.org/category_taxonomy)
     categories: ["cs", "physics", "math", "stat"]
     # Maximum papers to fetch per category per day
     max_papers: 100
   papers_cool:
-    # Papers.cool categories (CS subfields)
+    # Reserved for future implementation. Do not select as sources.primary yet.
     categories: ["cs.ai", "cs.lg", "cs.cv", "cs.cl"]
     max_papers: 50
 
@@ -36,8 +37,9 @@ schedule:
 
 # LLM configuration
 llm:
-  provider: "openai"  # "openai", "anthropic", "local"
-  model: "gpt-4-turbo-preview"  # Model name for classification and summarization
+  provider: "openai"  # Supported today: "openai" or "anthropic"
+  # "local" remains planned future work and will fail fast at startup.
+  model: "gpt-4o-mini"  # Example only: choose a model available in your account
   classification_temperature: 0.1  # Lower temperature for consistent classification
   summarization_temperature: 0.3   # Slightly higher for varied summaries
   # API keys are loaded from .env file
@@ -63,7 +65,7 @@ storage:
 
 # Advanced settings (optional)
 #advanced:
-#  max_retries: 5            # Maximum retries for network operations
+#  max_retries: 5            # Maximum retries for source, LLM, and SMTP operations
 #  retry_backoff_factor: 2   # Exponential backoff factor
 #  request_timeout: 30       # HTTP request timeout in seconds
-#  log_level: "INFO"         # Logging level: DEBUG, INFO, WARNING, ERROR
+#  log_level: "INFO"         # Logging level: DEBUG, INFO, WARNING, ERROR, CRITICAL

@@ -99,8 +99,12 @@ def test_json_storage_get_latest_date(temp_dir):
     assert storage.get_latest_date() is None
 
     # Save papers for two dates
-    storage.save_papers(date(2023, 1, 15), [Paper(title="Test", abstract="", authors=[])])
-    storage.save_papers(date(2023, 1, 16), [Paper(title="Test", abstract="", authors=[])])
+    storage.save_papers(
+        date(2023, 1, 15), [Paper(title="Test", abstract="", authors=[])]
+    )
+    storage.save_papers(
+        date(2023, 1, 16), [Paper(title="Test", abstract="", authors=[])]
+    )
 
     latest = storage.get_latest_date()
     assert latest == date(2023, 1, 16)
@@ -144,10 +148,13 @@ def test_json_storage_count_papers(temp_dir):
 
     # Save papers for multiple dates
     storage.save_papers(date(2023, 1, 15), [Paper(title="A", abstract="", authors=[])])
-    storage.save_papers(date(2023, 1, 16), [
-        Paper(title="B", abstract="", authors=[]),
-        Paper(title="C", abstract="", authors=[]),
-    ])
+    storage.save_papers(
+        date(2023, 1, 16),
+        [
+            Paper(title="B", abstract="", authors=[]),
+            Paper(title="C", abstract="", authors=[]),
+        ],
+    )
 
     # Total count
     assert storage.count_papers() == 3

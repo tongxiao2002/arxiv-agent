@@ -5,11 +5,14 @@ from datetime import date
 from typing import Any, Dict, List
 
 from arxiv_agent.agents.base import BaseAgent
+from arxiv_agent.config import AdvancedConfig
 from arxiv_agent.sources.arxiv_source import ArxivSource
 from arxiv_agent.sources.base_source import Paper
 from arxiv_agent.sources.papers_cool_source import PapersCoolSource
 from arxiv_agent.storage.json_storage import JsonStorage
 from arxiv_agent.utils.retry import retry
+from arxiv_agent.utils.runtime import RuntimeOptions
+from arxiv_agent.utils.timezone import get_current_date_in_timezone
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +31,8 @@ class ScraperAgent(BaseAgent):
         self.source = None
         self.storage = None
         self.timezone = config.get("agent", {}).get("timezone", "Asia/Shanghai")
+        self.advanced_config = AdvancedConfig(**config.get("advanced", {}))
+        self.runtime_options = RuntimeOptions.from_mapping(config.get("advanced", {}))
         self._setup_sources()
         self._setup_storage()
 
@@ -38,21 +43,27 @@ class ScraperAgent(BaseAgent):
 
         if primary_source == "arxiv":
             arxiv_config = sources_config.get("arxiv", {})
-            self.source = ArxivSource(arxiv_config)
+            self.source = ArxivSource(
+                arxiv_config,
+                runtime_options=self.runtime_options,
+            )
         elif primary_source == "papers_cool":
             papers_cool_config = sources_config.get("papers_cool", {})
-            self.source = PapersCoolSource(papers_cool_config)
+            self.source = PapersCoolSource(
+                papers_cool_config,
+                runtime_options=self.runtime_options,
+            )
         else:
             raise ValueError(f"Unknown primary source: {primary_source}")
 
-        logger.info(f"Configured scraper agent with source: {primary_source}")
+        logger.info("Configured scraper agent with source: %s", primary_source)
 
     def _setup_storage(self) -> None:
         """Set up JSON storage."""
         storage_config = self.config.get("storage", {})
         data_dir = storage_config.get("data_dir", "./papers")
         self.storage = JsonStorage(data_dir=data_dir)
-        logger.info(f"Configured scraper agent storage at {data_dir}")
+        logger.info("Configured scraper agent storage at %s", data_dir)
 
     @retry(max_retries=3, backoff_factor=2.0, jitter=True)
     def run(self, *args: Any, **kwargs: Any) -> Dict[str, Any]:
@@ -81,11 +92,11 @@ class ScraperAgent(BaseAgent):
             max_papers = self.source.max_papers
 
         # Fetch papers
-        logger.info(f"Fetching papers from {self.source.source_name}")
+        logger.info("Fetching papers from %s", self.source.source_name)
         papers = self.source.fetch_papers(max_papers=max_papers)
 
         if not papers:
-            logger.warning(f"No papers fetched from {self.source.source_name}")
+            logger.warning("No papers fetched from %s", self.source.source_name)
             return {
                 "success": True,
                 "papers_fetched": 0,
@@ -100,7 +111,9 @@ class ScraperAgent(BaseAgent):
             raise RuntimeError("Failed to save papers to storage")
 
         logger.info(
-            f"Successfully fetched and stored {len(papers)} papers from {self.source.source_name}"
+            "Successfully fetched and stored %s papers from %s",
+            len(papers),
+            self.source.source_name,
         )
 
         return {
@@ -108,7 +121,9 @@ class ScraperAgent(BaseAgent):
             "papers_fetched": len(papers),
             "source": self.source.source_name,
             "storage_date": target_date.isoformat(),
-            "categories": self.source.categories if hasattr(self.source, "categories") else [],
+            "categories": (
+                self.source.categories if hasattr(self.source, "categories") else []
+            ),
         }
 
     def _parse_target_date(self, *args: Any, **kwargs: Any) -> date:
@@ -124,7 +139,7 @@ class ScraperAgent(BaseAgent):
         if target_date is not None and hasattr(target_date, "isoformat"):
             return target_date
 
-        return date.today()
+        return get_current_date_in_timezone(self.timezone)
 
     def validate(self) -> bool:
         """

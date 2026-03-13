@@ -10,7 +10,7 @@ from urllib.parse import urlencode
 import requests
 
 from arxiv_agent.sources.base_source import BaseSource, Paper
-from arxiv_agent.utils.retry import retry
+from arxiv_agent.utils.runtime import RuntimeOptions, call_with_retry
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +31,12 @@ ARXIV_CATEGORIES = {
 class ArxivSource(BaseSource):
     """arXiv.org paper source implementation."""
 
-    def __init__(self, config: Dict[str, Any]):
+    def __init__(
+        self,
+        config: Dict[str, Any],
+        *,
+        runtime_options: Optional[RuntimeOptions] = None,
+    ):
         """
         Initialize arXiv source.
 
@@ -41,6 +46,7 @@ class ArxivSource(BaseSource):
         super().__init__(config, source_name="arxiv")
         self.categories = config.get("categories", ["cs", "physics", "math"])
         self.max_papers = config.get("max_papers", 100)
+        self.runtime_options = runtime_options or RuntimeOptions()
         self._validate_categories()
 
     def _validate_categories(self) -> None:
@@ -55,7 +61,6 @@ class ArxivSource(BaseSource):
             # Remove invalid categories
             self.categories = [cat for cat in self.categories if cat not in invalid]
 
-    @retry(max_retries=3, backoff_factor=2.0, jitter=True)
     def _fetch_arxiv_feed(self, category: str, max_results: int) -> str:
         """
         Fetch arXiv Atom feed for a category.
@@ -77,16 +82,27 @@ class ArxivSource(BaseSource):
         url = f"{ARXIV_API_URL}?{urlencode(params)}"
 
         logger.info(f"Fetching arXiv feed for category '{category}'")
-        response = requests.get(url, timeout=30)
-        response.raise_for_status()
 
-        # Check rate limiting
-        if "Retry-After" in response.headers:
-            retry_after = int(response.headers["Retry-After"])
-            logger.warning(f"arXiv API rate limited. Retry after {retry_after} seconds")
-            # The retry decorator will handle this via the exception
+        def operation() -> str:
+            response = requests.get(url, timeout=self.runtime_options.request_timeout)
+            response.raise_for_status()
 
-        return response.text
+            if "Retry-After" in response.headers:
+                retry_after = int(response.headers["Retry-After"])
+                logger.warning(
+                    "arXiv API rate limited. Retry after %s seconds",
+                    retry_after,
+                )
+
+            return response.text
+
+        return call_with_retry(
+            operation,
+            operation_name="_fetch_arxiv_feed",
+            max_retries=self.runtime_options.max_retries,
+            backoff_factor=self.runtime_options.retry_backoff_factor,
+            retry_on=requests.RequestException,
+        )
 
     def _parse_atom_feed(self, xml_content: str) -> List[Paper]:
         """

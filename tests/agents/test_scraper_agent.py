@@ -129,18 +129,27 @@ def test_scraper_agent_validate_missing_data_dir():
     assert agent.validate() is False
 
 
-@patch("arxiv_agent.agents.scraper_agent.date")
+@patch("arxiv_agent.agents.scraper_agent.get_current_date_in_timezone")
 @patch.object(ArxivSource, "fetch_papers")
 @patch.object(JsonStorage, "save_papers")
-def test_scraper_agent_run_success_arxiv(mock_save, mock_fetch, mock_date):
+def test_scraper_agent_run_success_arxiv(mock_save, mock_fetch, mock_now):
     """Test successful scraper agent run with arXiv source."""
-    # Mock date.today()
-    mock_date.today.return_value = date(2023, 1, 15)
+    mock_now.return_value = date(2023, 1, 15)
 
     # Mock papers
     mock_papers = [
-        Mock(title="Paper 1", abstract="Abstract 1", authors=["Author 1"], arxiv_id="2101.12345"),
-        Mock(title="Paper 2", abstract="Abstract 2", authors=["Author 2"], arxiv_id="2102.67890"),
+        Mock(
+            title="Paper 1",
+            abstract="Abstract 1",
+            authors=["Author 1"],
+            arxiv_id="2101.12345",
+        ),
+        Mock(
+            title="Paper 2",
+            abstract="Abstract 2",
+            authors=["Author 2"],
+            arxiv_id="2102.67890",
+        ),
     ]
     mock_fetch.return_value = mock_papers
     mock_save.return_value = True
@@ -165,12 +174,12 @@ def test_scraper_agent_run_success_arxiv(mock_save, mock_fetch, mock_date):
     mock_save.assert_called_once_with(date(2023, 1, 15), mock_papers)
 
 
-@patch("arxiv_agent.agents.scraper_agent.date")
+@patch("arxiv_agent.agents.scraper_agent.get_current_date_in_timezone")
 @patch.object(PapersCoolSource, "fetch_papers")
 @patch.object(JsonStorage, "save_papers")
-def test_scraper_agent_run_success_papers_cool(mock_save, mock_fetch, mock_date):
+def test_scraper_agent_run_success_papers_cool(mock_save, mock_fetch, mock_now):
     """Test successful scraper agent run with Papers.cool source."""
-    mock_date.today.return_value = date(2023, 1, 16)
+    mock_now.return_value = date(2023, 1, 16)
 
     mock_papers = [
         Mock(title="Paper A", abstract="Abstract A", authors=["Author A"]),
@@ -218,12 +227,12 @@ def test_scraper_agent_run_no_papers(mock_fetch):
     mock_fetch.assert_called_once()
 
 
-@patch("arxiv_agent.agents.scraper_agent.date")
+@patch("arxiv_agent.agents.scraper_agent.get_current_date_in_timezone")
 @patch.object(ArxivSource, "fetch_papers")
 @patch.object(JsonStorage, "save_papers")
-def test_scraper_agent_run_save_failure(mock_save, mock_fetch, mock_date):
+def test_scraper_agent_run_save_failure(mock_save, mock_fetch, mock_now):
     """Test scraper agent run when paper saving fails."""
-    mock_date.today.return_value = date(2023, 1, 15)
+    mock_now.return_value = date(2023, 1, 15)
     mock_papers = [Mock(title="Paper", abstract="Abstract", authors=["Author"])]
     mock_fetch.return_value = mock_papers
     mock_save.return_value = False
@@ -241,11 +250,11 @@ def test_scraper_agent_run_save_failure(mock_save, mock_fetch, mock_date):
         agent.run()
 
 
-@patch("arxiv_agent.agents.scraper_agent.date")
+@patch("arxiv_agent.agents.scraper_agent.get_current_date_in_timezone")
 @patch.object(ArxivSource, "validate_config")
-def test_scraper_agent_run_source_validation_fails(mock_validate, mock_date):
+def test_scraper_agent_run_source_validation_fails(mock_validate, mock_now):
     """Test scraper agent run when source validation fails."""
-    mock_date.today.return_value = date(2023, 1, 15)
+    mock_now.return_value = date(2023, 1, 15)
     mock_validate.return_value = False
 
     config = {
@@ -261,11 +270,11 @@ def test_scraper_agent_run_source_validation_fails(mock_validate, mock_date):
         agent.run()
 
 
-@patch("arxiv_agent.agents.scraper_agent.date")
+@patch("arxiv_agent.agents.scraper_agent.get_current_date_in_timezone")
 @patch.object(ArxivSource, "fetch_papers")
-def test_scraper_agent_run_source_not_initialized(mock_fetch, mock_date):
+def test_scraper_agent_run_source_not_initialized(mock_fetch, mock_now):
     """Test scraper agent run when source is not initialized."""
-    mock_date.today.return_value = date(2023, 1, 15)
+    mock_now.return_value = date(2023, 1, 15)
     mock_fetch.return_value = []
 
     config = {

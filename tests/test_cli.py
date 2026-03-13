@@ -15,6 +15,7 @@ def make_config() -> Config:
         {
             "agent": {"timezone": "Asia/Shanghai"},
             "topics": ["agents"],
+            "llm": {"provider": "openai", "model": "gpt-4o-mini"},
             "email": {
                 "smtp_host": "smtp.example.com",
                 "smtp_port": 587,
@@ -24,6 +25,8 @@ def make_config() -> Config:
                 "to_emails": ["user@example.com"],
                 "subject_template": "Digest - {date}",
             },
+            "storage": {"log_dir": "./custom-logs"},
+            "advanced": {"log_level": "DEBUG"},
         }
     )
 
@@ -42,8 +45,12 @@ def test_start_command_wires_scheduler():
     scheduler = Mock()
 
     with patch("arxiv_agent.cli.Scheduler", return_value=scheduler):
-        with patch("arxiv_agent.cli._run_scan_workflow", return_value={"success": True}) as mock_scan:
-            with patch("arxiv_agent.cli._run_email_workflow", return_value={"success": True}) as mock_email:
+        with patch(
+            "arxiv_agent.cli._run_scan_workflow", return_value={"success": True}
+        ) as mock_scan:
+            with patch(
+                "arxiv_agent.cli._run_email_workflow", return_value={"success": True}
+            ) as mock_email:
                 start_command(config)
                 kwargs = scheduler.configure_daily_jobs.call_args.kwargs
                 kwargs["scan_job"]()
@@ -71,7 +78,9 @@ def test_run_once_command_runs_scan_then_email(capsys):
         return {"success": True}
 
     with patch("arxiv_agent.cli._run_scan_workflow", side_effect=scan_side_effect):
-        with patch("arxiv_agent.cli._run_email_workflow", side_effect=email_side_effect):
+        with patch(
+            "arxiv_agent.cli._run_email_workflow", side_effect=email_side_effect
+        ):
             result = run_once_command(config, dry_run=False)
 
     assert result["success"] is True
@@ -85,7 +94,9 @@ def test_run_once_command_dry_run(capsys):
     config = make_config()
 
     with patch("arxiv_agent.cli._run_scan_workflow", return_value={"success": True}):
-        with patch("arxiv_agent.cli._run_email_workflow", return_value={"success": True}) as mock_email:
+        with patch(
+            "arxiv_agent.cli._run_email_workflow", return_value={"success": True}
+        ) as mock_email:
             result = run_once_command(config, dry_run=True)
 
     assert result["success"] is True
@@ -103,7 +114,7 @@ def test_main_version(mock_setup_logging, capsys):
     assert exit_code == 0
     captured = capsys.readouterr()
     assert "Arxiv-Agent v0.1.0" in captured.out
-    mock_setup_logging.assert_called_once()
+    mock_setup_logging.assert_called_once_with(file=False)
 
 
 @patch("arxiv_agent.cli.start_command")
@@ -114,6 +125,18 @@ def test_main_start(mock_config_class, mock_setup_logging, mock_start_command):
     mock_config = Mock()
     mock_config.validate.return_value = True
     mock_config.validate_runtime_requirements.return_value = True
+    mock_config.storage.log_dir = "./logs"
+    mock_config.advanced.log_level = "WARNING"
+    mock_config.agent.timezone = "UTC"
+    mock_config.sources.primary = "arxiv"
+    mock_config.llm.provider = "openai"
+    mock_config.llm.model = "gpt-4o-mini"
+    mock_config.storage.data_dir = "./papers"
+    mock_config.storage.archive_dir = "./archive"
+    mock_config.schedule.scan_time = "00:00"
+    mock_config.schedule.email_time = "09:00"
+    mock_config.advanced.max_retries = 5
+    mock_config.advanced.request_timeout = 30
     mock_config_class.from_yaml.return_value = mock_config
 
     sys.argv = ["arxiv-agent", "start", "--config", "test.yaml"]
@@ -121,6 +144,10 @@ def test_main_start(mock_config_class, mock_setup_logging, mock_start_command):
 
     assert exit_code == 0
     mock_config_class.from_yaml.assert_called_once()
+    mock_setup_logging.assert_called_once_with(
+        log_dir="./logs",
+        log_level="WARNING",
+    )
     mock_config.load_env.assert_called_once()
     mock_config.validate.assert_called_once()
     mock_config.validate_runtime_requirements.assert_called_once_with(
@@ -167,12 +194,28 @@ def test_main_run_once(mock_config_class, mock_setup_logging, mock_run_once_comm
     mock_config = Mock()
     mock_config.validate.return_value = True
     mock_config.validate_runtime_requirements.return_value = True
+    mock_config.storage.log_dir = "./logs"
+    mock_config.advanced.log_level = "INFO"
+    mock_config.agent.timezone = "UTC"
+    mock_config.sources.primary = "arxiv"
+    mock_config.llm.provider = "openai"
+    mock_config.llm.model = "gpt-4o-mini"
+    mock_config.storage.data_dir = "./papers"
+    mock_config.storage.archive_dir = "./archive"
+    mock_config.schedule.scan_time = "00:00"
+    mock_config.schedule.email_time = "09:00"
+    mock_config.advanced.max_retries = 5
+    mock_config.advanced.request_timeout = 30
     mock_config_class.from_yaml.return_value = mock_config
 
     sys.argv = ["arxiv-agent", "run-once", "--dry-run"]
     exit_code = main()
 
     assert exit_code == 0
+    mock_setup_logging.assert_called_once_with(
+        log_dir="./logs",
+        log_level="INFO",
+    )
     mock_config.validate_runtime_requirements.assert_called_once_with(
         require_llm=True,
         require_email=False,

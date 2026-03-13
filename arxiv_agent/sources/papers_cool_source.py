@@ -2,15 +2,15 @@
 
 import logging
 import re
+import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional
-from urllib.parse import urljoin
 
 import requests
 from bs4 import BeautifulSoup
 
 from arxiv_agent.sources.base_source import BaseSource, Paper
-from arxiv_agent.utils.retry import retry
+from arxiv_agent.utils.runtime import RuntimeOptions, call_with_retry
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +29,12 @@ PAPERS_COOL_CATEGORIES = {
 class PapersCoolSource(BaseSource):
     """Papers.cool paper source implementation (web scraping)."""
 
-    def __init__(self, config: Dict[str, Any]):
+    def __init__(
+        self,
+        config: Dict[str, Any],
+        *,
+        runtime_options: Optional[RuntimeOptions] = None,
+    ):
         """
         Initialize Papers.cool source.
 
@@ -39,6 +44,7 @@ class PapersCoolSource(BaseSource):
         super().__init__(config, source_name="papers_cool")
         self.categories = config.get("categories", ["cs.ai", "cs.lg"])
         self.max_papers = config.get("max_papers", 50)
+        self.runtime_options = runtime_options or RuntimeOptions()
         self._validate_categories()
 
     def _validate_categories(self) -> None:
@@ -53,7 +59,6 @@ class PapersCoolSource(BaseSource):
             # Remove invalid categories
             self.categories = [cat for cat in self.categories if cat not in invalid]
 
-    @retry(max_retries=3, backoff_factor=2.0, jitter=True)
     def _fetch_category_page(self, category: str, page: int = 1) -> Optional[str]:
         """
         Fetch Papers.cool category page HTML.
@@ -65,27 +70,29 @@ class PapersCoolSource(BaseSource):
         Returns:
             HTML content as string, or None if request fails
         """
-        try:
-            # Construct URL for category (this is a placeholder - actual URL may differ)
+
+        def operation() -> str:
             url = f"{PAPERS_COOL_BASE_URL}/arxiv/{category}"
             if page > 1:
                 url = f"{url}?page={page}"
 
-            logger.info(f"Fetching Papers.cool page for category '{category}'")
-            response = requests.get(url, timeout=30)
+            logger.info("Fetching Papers.cool page for category '%s'", category)
+            response = requests.get(url, timeout=self.runtime_options.request_timeout)
             response.raise_for_status()
 
-            # Respect robots.txt and rate limiting
-            delay = 2  # Be respectful with delays between requests
-            logger.debug(f"Waiting {delay} seconds before next request")
-            import time
-
+            delay = 2
+            logger.debug("Waiting %s seconds before next request", delay)
             time.sleep(delay)
 
             return response.text
-        except requests.RequestException as e:
-            logger.error(f"Failed to fetch Papers.cool page: {e}")
-            return None
+
+        return call_with_retry(
+            operation,
+            operation_name="_fetch_category_page",
+            max_retries=self.runtime_options.max_retries,
+            backoff_factor=self.runtime_options.retry_backoff_factor,
+            retry_on=requests.RequestException,
+        )
 
     def _parse_html_page(self, html_content: str, category: str) -> List[Paper]:
         """
@@ -151,7 +158,9 @@ class PapersCoolSource(BaseSource):
             title_elem = paper_elem.find("h2", class_="paper-title")
             abstract_elem = paper_elem.find("div", class_="abstract")
             authors_elem = paper_elem.find("span", class_="authors")
-            link_elem = paper_elem.find("a", href=re.compile(r"arxiv\.org/abs/\d+\.\d+"))
+            link_elem = paper_elem.find(
+                "a", href=re.compile(r"arxiv\.org/abs/\d+\.\d+")
+            )
 
             if not title_elem or not abstract_elem:
                 return None
@@ -170,7 +179,9 @@ class PapersCoolSource(BaseSource):
             webpage_url = None
             if link_elem:
                 link_href = link_elem.get("href", "")
-                arxiv_id_match = re.search(r"arxiv\.org/abs/(\d+\.\d+)(v\d+)?", link_href)
+                arxiv_id_match = re.search(
+                    r"arxiv\.org/abs/(\d+\.\d+)(v\d+)?", link_href
+                )
                 if arxiv_id_match:
                     arxiv_id = arxiv_id_match.group(1)
                     pdf_url = f"https://arxiv.org/pdf/{arxiv_id}.pdf"

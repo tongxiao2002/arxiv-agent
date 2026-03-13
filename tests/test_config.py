@@ -34,7 +34,7 @@ def test_config_from_dict():
         "schedule": {"scan_time": "01:00", "email_time": "10:00"},
         "llm": {
             "provider": "anthropic",
-            "model": "claude-3-opus",
+            "model": "claude-3-5-haiku-latest",
             "classification_temperature": 0.2,
             "summarization_temperature": 0.4,
         },
@@ -141,6 +141,20 @@ def test_config_runtime_validation_llm_missing_key(monkeypatch, config):
     assert config.validate_runtime_requirements(require_llm=True) is False
 
 
+def test_config_runtime_validation_rejects_unsupported_source(config):
+    """Test runtime validation rejects unsupported primary sources."""
+    config.sources.primary = "papers_cool"
+    errors = config.get_runtime_validation_errors()
+    assert any("papers_cool" in error for error in errors)
+
+
+def test_config_runtime_validation_rejects_local_provider(config):
+    """Test runtime validation rejects unsupported local provider."""
+    config.llm.provider = "local"
+    errors = config.get_runtime_validation_errors()
+    assert any("local" in error for error in errors)
+
+
 def test_config_runtime_validation_email_missing_password(monkeypatch, config):
     """Test runtime readiness for SMTP credentials."""
     monkeypatch.delenv("SMTP_PASSWORD", raising=False)
@@ -158,6 +172,25 @@ def test_config_load_env(env_file, config):
     config.load_env(env_file)
     assert config.agent.timezone == "UTC"
     assert config.advanced.log_level == "DEBUG"
+
+
+def test_config_load_env_advanced_overrides(temp_dir, config):
+    """Test advanced runtime overrides can be loaded from .env."""
+    env_file = temp_dir / ".env"
+    env_file.write_text(
+        "\n".join(
+            [
+                'MAX_RETRIES="7"',
+                'RETRY_BACKOFF_FACTOR="3.5"',
+                'REQUEST_TIMEOUT="45"',
+            ]
+        )
+    )
+
+    config.load_env(env_file)
+    assert config.advanced.max_retries == 7
+    assert config.advanced.retry_backoff_factor == 3.5
+    assert config.advanced.request_timeout == 45
 
 
 def test_config_load_env_file_not_found(config, caplog):
@@ -219,3 +252,18 @@ def test_config_partial_override():
     assert config.agent.name == "arxiv-agent"
     assert config.llm.model == "gpt-3.5-turbo"
     assert config.llm.provider == "openai"
+
+
+def test_config_validation_invalid_advanced_settings():
+    """Test static validation rejects invalid advanced values."""
+    config = Config()
+    config.advanced.max_retries = 0
+    config.advanced.retry_backoff_factor = 0.5
+    config.advanced.request_timeout = 0
+    config.advanced.log_level = "LOUD"
+
+    errors = config.get_validation_errors()
+    assert any("advanced.max_retries" in error for error in errors)
+    assert any("advanced.retry_backoff_factor" in error for error in errors)
+    assert any("advanced.request_timeout" in error for error in errors)
+    assert any("advanced.log_level" in error for error in errors)

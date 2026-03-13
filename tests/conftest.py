@@ -37,7 +37,7 @@ def sample_config_dict() -> Dict[str, Any]:
         "schedule": {"scan_time": "00:00", "email_time": "09:00"},
         "llm": {
             "provider": "openai",
-            "model": "gpt-4-turbo-preview",
+            "model": "gpt-4o-mini",
             "classification_temperature": 0.1,
             "summarization_temperature": 0.3,
         },

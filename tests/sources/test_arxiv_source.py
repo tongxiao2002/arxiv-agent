@@ -1,10 +1,11 @@
 """Tests for arXiv source implementation."""
 
-import pytest
 from unittest.mock import Mock, patch
 
-from arxiv_agent.sources.arxiv_source import ArxivSource
+import pytest
 
+from arxiv_agent.sources.arxiv_source import ArxivSource
+from arxiv_agent.utils.runtime import RuntimeOptions
 
 SAMPLE_ATOM_FEED = """<?xml version="1.0" encoding="UTF-8"?>
 <feed xmlns="http://www.w3.org/2005/Atom">
@@ -81,6 +82,32 @@ def test_fetch_arxiv_feed(mock_get):
     call_url = mock_get.call_args[0][0]
     assert "search_query=cat%3Acs" in call_url
     assert "max_results=10" in call_url
+    assert mock_get.call_args.kwargs["timeout"] == 30
+
+
+@patch("arxiv_agent.utils.retry.time.sleep", return_value=None)
+@patch("arxiv_agent.sources.arxiv_source.requests.get")
+def test_fetch_arxiv_feed_uses_runtime_options(mock_get, _mock_sleep):
+    """Test configurable retry count and timeout are used."""
+    mock_get.side_effect = [
+        pytest.importorskip("requests").RequestException("temporary failure"),
+        pytest.importorskip("requests").RequestException("temporary failure"),
+    ]
+
+    source = ArxivSource(
+        {"categories": ["cs"]},
+        runtime_options=RuntimeOptions(
+            max_retries=2,
+            retry_backoff_factor=1.0,
+            request_timeout=7,
+        ),
+    )
+
+    with pytest.raises(Exception, match="temporary failure"):
+        source._fetch_arxiv_feed("cs", max_results=10)
+
+    assert mock_get.call_count == 2
+    assert mock_get.call_args.kwargs["timeout"] == 7
 
 
 @patch("arxiv_agent.sources.arxiv_source.requests.get")
@@ -133,6 +160,7 @@ def test_parse_atom_feed_invalid_xml():
 def test_parse_atom_entry_missing_fields():
     """Test parsing Atom entry with missing fields."""
     import xml.etree.ElementTree as ET
+
     from arxiv_agent.sources.arxiv_source import ARXIV_NAMESPACE
 
     # Create minimal entry missing required fields
@@ -166,7 +194,9 @@ def test_fetch_papers(mock_get):
 def test_fetch_papers_empty_response(mock_get):
     """Test fetching papers with empty response."""
     mock_response = Mock()
-    mock_response.text = """<?xml version="1.0"?><feed xmlns="http://www.w3.org/2005/Atom"></feed>"""
+    mock_response.text = (
+        """<?xml version="1.0"?><feed xmlns="http://www.w3.org/2005/Atom"></feed>"""
+    )
     mock_response.headers = {}
     mock_response.raise_for_status = Mock()
     mock_get.return_value = mock_response

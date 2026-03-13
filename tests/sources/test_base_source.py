@@ -1,7 +1,8 @@
 """Tests for base source class."""
 
-import pytest
 from unittest.mock import Mock
+
+import pytest
 
 from arxiv_agent.sources.base_source import BaseSource, Paper, SourceError
 

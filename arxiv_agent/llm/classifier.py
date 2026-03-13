@@ -4,8 +4,9 @@ import logging
 from typing import Any, Dict, List, Optional, Tuple
 
 from arxiv_agent.config import LLMConfig
+from arxiv_agent.llm.provider_utils import get_provider_api_key, get_provider_env_var
 from arxiv_agent.sources.base_source import Paper
-from arxiv_agent.utils.retry import retry
+from arxiv_agent.utils.runtime import RuntimeOptions, call_with_retry
 
 logger = logging.getLogger(__name__)
 
@@ -16,13 +17,17 @@ class LLMError(Exception):
     def __init__(self, message: str, provider: Optional[str] = None):
         self.provider = provider
         super().__init__(
-            f"LLM Error ({provider}): {message}" if provider else f"LLM Error: {message}"
+            f"LLM Error ({provider}): {message}"
+            if provider
+            else f"LLM Error: {message}"
         )
 
 
 class LLMConfigurationError(LLMError):
     """Exception for LLM configuration errors (e.g., missing API keys)."""
+
     pass
+
 
 class ClassificationError(LLMError):
     """Exception for classification-specific errors."""
@@ -79,10 +84,17 @@ def _parse_classification_response(response_text: str) -> Dict[str, Any]:
         raise ClassificationError(f"Failed to parse classification response: {e}")
 
     # Validate required fields
-    required_fields = ["relevance_score", "is_relevant", "matched_topics", "classification_reason"]
+    required_fields = [
+        "relevance_score",
+        "is_relevant",
+        "matched_topics",
+        "classification_reason",
+    ]
     for field in required_fields:
         if field not in data:
-            raise ClassificationError(f"Missing field in classification response: {field}")
+            raise ClassificationError(
+                f"Missing field in classification response: {field}"
+            )
 
     # Validate types
     if not isinstance(data["relevance_score"], (int, float)):
@@ -102,38 +114,63 @@ def _parse_classification_response(response_text: str) -> Dict[str, Any]:
     return data
 
 
-@retry(max_retries=3, backoff_factor=2.0, jitter=True)
-def _call_openai_api(prompt: str, config: LLMConfig) -> str:
+def _call_openai_api(
+    prompt: str,
+    config: LLMConfig,
+    runtime_options: Optional[RuntimeOptions] = None,
+) -> str:
     """Make API call to OpenAI with retry logic."""
     try:
         from openai import OpenAI
     except ImportError:
-        raise LLMConfigurationError("OpenAI library not installed. Install with: pip install openai")
+        raise LLMConfigurationError(
+            "OpenAI library not installed. Install with: pip install openai"
+        )
 
-    api_key = _get_openai_api_key()
+    runtime = runtime_options or RuntimeOptions()
+    api_key = get_provider_api_key("openai")
     if not api_key:
-        raise LLMConfigurationError("OPENAI_API_KEY environment variable not set")
+        env_var = get_provider_env_var("openai")
+        raise LLMConfigurationError(f"{env_var} environment variable not set")
 
     client = OpenAI(api_key=api_key)
 
-    try:
-        response = client.chat.completions.create(
-            model=config.model,
-            messages=[
-                {"role": "system", "content": "You are a helpful research assistant."},
-                {"role": "user", "content": prompt},
-            ],
-            temperature=config.classification_temperature,
-            max_tokens=500,
-            response_format={"type": "json_object"},
-        )
-        return response.choices[0].message.content or ""
-    except Exception as e:
-        raise ClassificationError(f"OpenAI API error: {e}", provider="openai")
+    def operation() -> str:
+        try:
+            response = client.chat.completions.create(
+                model=config.model,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "You are a helpful research assistant.",
+                    },
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=config.classification_temperature,
+                max_tokens=500,
+                response_format={"type": "json_object"},
+                timeout=runtime.request_timeout,
+            )
+            return response.choices[0].message.content or ""
+        except Exception as exc:
+            raise ClassificationError(
+                f"OpenAI API error: {exc}",
+                provider="openai",
+            ) from exc
+
+    return call_with_retry(
+        operation,
+        operation_name="_call_openai_api",
+        max_retries=runtime.max_retries,
+        backoff_factor=runtime.retry_backoff_factor,
+    )
 
 
-@retry(max_retries=3, backoff_factor=2.0, jitter=True)
-def _call_anthropic_api(prompt: str, config: LLMConfig) -> str:
+def _call_anthropic_api(
+    prompt: str,
+    config: LLMConfig,
+    runtime_options: Optional[RuntimeOptions] = None,
+) -> str:
     """Make API call to Anthropic with retry logic."""
     try:
         import anthropic
@@ -142,44 +179,44 @@ def _call_anthropic_api(prompt: str, config: LLMConfig) -> str:
             "Anthropic library not installed. Install with: pip install anthropic"
         )
 
-    api_key = _get_anthropic_api_key()
+    runtime = runtime_options or RuntimeOptions()
+    api_key = get_provider_api_key("anthropic")
     if not api_key:
-        raise LLMConfigurationError("ANTHROPIC_API_KEY environment variable not set")
+        env_var = get_provider_env_var("anthropic")
+        raise LLMConfigurationError(f"{env_var} environment variable not set")
 
     client = anthropic.Anthropic(api_key=api_key)
 
-    try:
-        # Anthropic doesn't support JSON response format directly, but we can request JSON
-        response = client.messages.create(
-            model=config.model,
-            max_tokens=500,
-            temperature=config.classification_temperature,
-            system="You are a helpful research assistant. Respond with valid JSON only.",
-            messages=[
-                {"role": "user", "content": prompt}
-            ],
-        )
-        return response.content[0].text
-    except Exception as e:
-        raise ClassificationError(f"Anthropic API error: {e}", provider="anthropic")
+    def operation() -> str:
+        try:
+            response = client.messages.create(
+                model=config.model,
+                max_tokens=500,
+                temperature=config.classification_temperature,
+                system="You are a helpful research assistant. Respond with valid JSON only.",
+                messages=[{"role": "user", "content": prompt}],
+                timeout=runtime.request_timeout,
+            )
+            return response.content[0].text
+        except Exception as exc:
+            raise ClassificationError(
+                f"Anthropic API error: {exc}",
+                provider="anthropic",
+            ) from exc
 
-
-def _get_openai_api_key() -> Optional[str]:
-    """Get OpenAI API key from environment."""
-    import os
-    return os.getenv("OPENAI_API_KEY")
-
-
-def _get_anthropic_api_key() -> Optional[str]:
-    """Get Anthropic API key from environment."""
-    import os
-    return os.getenv("ANTHROPIC_API_KEY")
+    return call_with_retry(
+        operation,
+        operation_name="_call_anthropic_api",
+        max_retries=runtime.max_retries,
+        backoff_factor=runtime.retry_backoff_factor,
+    )
 
 
 def classify_paper(
     paper: Paper,
     config: LLMConfig,
     topics: List[str],
+    runtime_options: Optional[RuntimeOptions] = None,
 ) -> Dict[str, Any]:
     """
     Classify a paper's relevance using LLM.
@@ -215,9 +252,9 @@ def classify_paper(
     provider = config.provider.lower()
     try:
         if provider == "openai":
-            response_text = _call_openai_api(prompt, config)
+            response_text = _call_openai_api(prompt, config, runtime_options)
         elif provider == "anthropic":
-            response_text = _call_anthropic_api(prompt, config)
+            response_text = _call_anthropic_api(prompt, config, runtime_options)
         elif provider == "local":
             # Local provider not yet implemented
             raise ProviderNotSupportedError(

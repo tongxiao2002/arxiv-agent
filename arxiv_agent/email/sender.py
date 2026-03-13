@@ -9,7 +9,7 @@ from email.message import EmailMessage
 from typing import Any, Dict, Optional
 
 from arxiv_agent.config import EmailConfig
-from arxiv_agent.utils.retry import retry
+from arxiv_agent.utils.runtime import call_with_retry
 
 logger = logging.getLogger(__name__)
 
@@ -27,10 +27,14 @@ class SmtpEmailSender:
         *,
         smtp_password: Optional[str] = None,
         timeout: int = 30,
+        max_retries: int = 3,
+        retry_backoff_factor: float = 2.0,
     ) -> None:
         self.config = config
         self.smtp_password = smtp_password
         self.timeout = timeout
+        self.max_retries = max_retries
+        self.retry_backoff_factor = retry_backoff_factor
 
     def send_email(
         self,
@@ -91,39 +95,47 @@ class SmtpEmailSender:
         message.add_alternative(html_body, subtype="html")
         return message
 
-    @retry(
-        max_retries=3,
-        backoff_factor=2.0,
-        jitter=True,
-        retry_on=(smtplib.SMTPException, OSError),
-    )
     def _deliver_message(self, message: EmailMessage) -> None:
         """Connect to the SMTP server and send a message."""
-        client = self._create_client()
-        try:
-            if self.config.smtp_security == "starttls":
-                client.ehlo()
-                client.starttls(context=ssl.create_default_context())
-                client.ehlo()
 
-            if self.config.smtp_username:
-                if not self.smtp_password:
-                    raise EmailDeliveryError(
-                        "SMTP_PASSWORD is required when smtp_username is configured"
-                    )
-                client.login(self.config.smtp_username, self.smtp_password)
-
-            client.send_message(message, to_addrs=self.config.to_emails)
-        except EmailDeliveryError:
-            raise
-        except (smtplib.SMTPException, OSError) as exc:
-            logger.warning("SMTP send failed: %s", exc)
-            raise
-        finally:
+        def operation() -> None:
+            client = self._create_client()
             try:
-                client.quit()
-            except (smtplib.SMTPException, OSError):
-                logger.debug("SMTP client quit failed during cleanup", exc_info=True)
+                if self.config.smtp_security == "starttls":
+                    client.ehlo()
+                    client.starttls(context=ssl.create_default_context())
+                    client.ehlo()
+
+                if self.config.smtp_username:
+                    if not self.smtp_password:
+                        raise EmailDeliveryError(
+                            "SMTP_PASSWORD is required when smtp_username is configured"
+                        )
+                    client.login(self.config.smtp_username, self.smtp_password)
+
+                client.send_message(message, to_addrs=self.config.to_emails)
+            except EmailDeliveryError:
+                raise
+            except (smtplib.SMTPException, OSError) as exc:
+                logger.warning("SMTP send failed: %s", exc)
+                raise
+            finally:
+                try:
+                    client.quit()
+                except (smtplib.SMTPException, OSError):
+                    logger.debug(
+                        "SMTP client quit failed during cleanup",
+                        exc_info=True,
+                    )
+
+        call_with_retry(
+            operation,
+            operation_name="_deliver_message",
+            max_retries=self.max_retries,
+            backoff_factor=self.retry_backoff_factor,
+            retry_on=(smtplib.SMTPException, OSError),
+            respect_retry_after=False,
+        )
 
     def _create_client(self) -> smtplib.SMTP:
         """Create an SMTP client based on configured transport security."""
