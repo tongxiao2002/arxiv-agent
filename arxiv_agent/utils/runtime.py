@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
-from typing import Any, Callable, Mapping, Optional, TypeVar, Union
+from typing import Any, Awaitable, Callable, Mapping, Optional, TypeVar, Union
 
 from arxiv_agent.utils.retry import RetryError, retry
 
@@ -56,6 +57,52 @@ def call_with_retry(
         respect_retry_after=respect_retry_after,
     )(_operation)
     return wrapped()
+
+
+async def call_with_retry_async(
+    operation: Callable[[], Awaitable[T]],
+    *,
+    operation_name: str,
+    max_retries: int,
+    backoff_factor: float,
+    retry_on: Union[type[Exception], tuple[type[Exception], ...]] = Exception,
+    respect_retry_after: bool = True,
+) -> T:
+    """Execute an async operation with configurable retry settings."""
+    last_exception: Optional[Exception] = None
+
+    for attempt in range(max_retries):
+        try:
+            return await operation()
+        except retry_on as exc:
+            last_exception = exc
+
+            retry_after = None
+            if respect_retry_after and hasattr(exc, "response"):
+                try:
+                    retry_after_header = exc.response.headers.get("Retry-After")
+                    if retry_after_header:
+                        retry_after = int(retry_after_header)
+                except (AttributeError, ValueError):
+                    pass
+
+            if attempt < max_retries - 1:
+                delay = (
+                    float(retry_after)
+                    if retry_after is not None
+                    else backoff_factor**attempt
+                )
+                await asyncio.sleep(delay)
+            else:
+                raise RetryError(
+                    f"Function {operation_name} failed after {max_retries} attempts",
+                    last_exception=last_exception,
+                ) from last_exception
+
+    raise RetryError(
+        f"Function {operation_name} failed after {max_retries} attempts",
+        last_exception=last_exception,
+    )
 
 
 def describe_retry_error(exc: RetryError, action: str) -> str:

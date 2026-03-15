@@ -84,7 +84,6 @@ def _render_paper_text(index: int, paper: EnhancedPaper) -> str:
     return (
         f"{index}. {paper.title}\n"
         f"Authors: {authors}\n"
-        f"Source: {paper.source or 'unknown'}\n"
         f"Matched topics: {topics}\n"
         f"Summary: {summary}\n"
         f"{links}"
@@ -94,7 +93,6 @@ def _render_paper_text(index: int, paper: EnhancedPaper) -> str:
 def _render_paper_html(index: int, paper: EnhancedPaper) -> str:
     """Render a single paper in HTML."""
     authors = escape(", ".join(paper.authors) if paper.authors else "Unknown authors")
-    source = escape(paper.source or "unknown")
     topics = escape(", ".join(paper.matched_topics) if paper.matched_topics else "None")
     summary = escape(paper.summary or "No summary available.")
     title = escape(paper.title)
@@ -103,7 +101,6 @@ def _render_paper_html(index: int, paper: EnhancedPaper) -> str:
         "<section>"
         f"<h2>{index}. {title}</h2>"
         f"<p><strong>Authors:</strong> {authors}</p>"
-        f"<p><strong>Source:</strong> {source}</p>"
         f"<p><strong>Matched topics:</strong> {topics}</p>"
         f"<p><strong>Summary:</strong> {summary}</p>"
         f"{links}"

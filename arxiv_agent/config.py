@@ -44,6 +44,7 @@ class ArxivSourceConfig:
 
     categories: List[str] = field(default_factory=lambda: ["cs", "physics", "math"])
     max_papers: int = 100
+    lookback_days: int = 1
 
 
 @dataclass
@@ -67,6 +68,7 @@ class SourceConfig:
 class LLMConfig:
     """LLM provider configuration."""
 
+    base_url: str = "https://api.openai.com/v1"
     provider: str = "openai"
     model: str = "gpt-4o-mini"
     classification_temperature: float = 0.1
@@ -187,6 +189,12 @@ class Config:
 
         if self.sources.primary not in VALID_PRIMARY_SOURCES:
             errors.append(f"Invalid primary source: {self.sources.primary}")
+
+        if (
+            not isinstance(self.sources.arxiv.lookback_days, int)
+            or self.sources.arxiv.lookback_days <= 0
+        ):
+            errors.append("sources.arxiv.lookback_days must be a positive integer")
 
         if not self.topics or not all(
             isinstance(topic, str) and topic.strip() for topic in self.topics

@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import smtplib
 import ssl
+from email.utils import formataddr
 from email.message import EmailMessage
 from typing import Any, Dict, Optional
 
@@ -89,7 +90,7 @@ class SmtpEmailSender:
         """Build a multipart email message."""
         message = EmailMessage()
         message["Subject"] = subject
-        message["From"] = self.config.from_email
+        message["From"] = formataddr(("Arxiv Daily Papers", self.config.from_email))
         message["To"] = ", ".join(self.config.to_emails)
         message.set_content(text_body)
         message.add_alternative(html_body, subtype="html")

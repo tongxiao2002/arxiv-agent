@@ -3,7 +3,7 @@
 import logging
 import re
 import xml.etree.ElementTree as ET
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlencode
 
@@ -17,15 +17,6 @@ logger = logging.getLogger(__name__)
 # arXiv API constants
 ARXIV_API_URL = "http://export.arxiv.org/api/query"
 ARXIV_NAMESPACE = "{http://www.w3.org/2005/Atom}"
-ARXIV_CATEGORIES = {
-    "cs": "Computer Science",
-    "physics": "Physics",
-    "math": "Mathematics",
-    "stat": "Statistics",
-    "q-bio": "Quantitative Biology",
-    "q-fin": "Quantitative Finance",
-    "eess": "Electrical Engineering and Systems Science",
-}
 
 
 class ArxivSource(BaseSource):
@@ -44,44 +35,63 @@ class ArxivSource(BaseSource):
             config: arXiv source configuration (categories, max_papers, etc.)
         """
         super().__init__(config, source_name="arxiv")
-        self.categories = config.get("categories", ["cs", "physics", "math"])
-        self.max_papers = config.get("max_papers", 100)
+        self.categories = config.get("categories", ["cs.LG", "cs.CV"])
+        self.max_papers = config.get("max_papers", 10)
+        self.lookback_days = config.get("lookback_days", 1)
         self.runtime_options = runtime_options or RuntimeOptions()
-        self._validate_categories()
 
-    def _validate_categories(self) -> None:
-        """Validate arXiv categories against known categories."""
-        valid_categories = set(ARXIV_CATEGORIES.keys())
-        invalid = [cat for cat in self.categories if cat not in valid_categories]
-        if invalid:
-            logger.warning(
-                f"Invalid arXiv categories: {invalid}. "
-                f"Valid categories: {list(valid_categories)}"
-            )
-            # Remove invalid categories
-            self.categories = [cat for cat in self.categories if cat not in invalid]
+    def _get_submission_window(
+        self,
+        today: Optional[datetime] = None,
+    ) -> tuple[datetime, datetime]:
+        """Return the [start, end) submission window for arXiv queries."""
+        window_end = (today or datetime.now()).replace(
+            hour=0,
+            minute=0,
+            second=0,
+            microsecond=0,
+        )
+        window_start = window_end - timedelta(days=self.lookback_days)
+        return window_start, window_end
 
-    def _fetch_arxiv_feed(self, category: str, max_results: int) -> str:
+    def _fetch_arxiv_feed(
+        self,
+        category: str,
+        max_results: int,
+        today: Optional[datetime] = None,
+    ) -> str:
         """
         Fetch arXiv Atom feed for a category.
 
         Args:
             category: arXiv category (e.g., "cs")
             max_results: Maximum number of results to fetch
+            today: Datetime representing the exclusive end of the query window
 
         Returns:
             Atom feed XML as string
         """
+        window_start, window_end = self._get_submission_window(today)
         params = {
-            "search_query": f"cat:{category}",
+            "search_query": (
+                "cat:"
+                f"{category}+AND+submittedDate:[{window_start.strftime('%Y%m%d%H%M')}"
+                f"+TO+{window_end.strftime('%Y%m%d%H%M')}]"
+            ),
             "sortBy": "submittedDate",
             "sortOrder": "descending",
-            "max_results": max_results,
             "start": 0,
+            "max_results": max_results,
         }
-        url = f"{ARXIV_API_URL}?{urlencode(params)}"
 
-        logger.info(f"Fetching arXiv feed for category '{category}'")
+        params_str = "&".join([f"{key}={val}" for key, val in params.items()])
+        url = f"{ARXIV_API_URL}?{params_str}"
+        logger.info(
+            "Fetching arXiv feed for category '%s' between %s and %s",
+            category,
+            window_start.isoformat(),
+            window_end.isoformat(),
+        )
 
         def operation() -> str:
             response = requests.get(url, timeout=self.runtime_options.request_timeout)
@@ -216,12 +226,17 @@ class ArxivSource(BaseSource):
             logger.debug(f"Error parsing arXiv entry: {e}")
             return None
 
-    def fetch_papers(self, max_papers: Optional[int] = None) -> List[Paper]:
+    def fetch_papers(
+        self,
+        max_papers: Optional[int] = None,
+        today: Optional[datetime] = None,
+    ) -> List[Paper]:
         """
         Fetch papers from arXiv.
 
         Args:
             max_papers: Maximum number of papers to fetch (None for no limit)
+            today: Datetime representing the exclusive end of the query window
 
         Returns:
             List of Paper objects
@@ -230,27 +245,39 @@ class ArxivSource(BaseSource):
             max_papers = self.max_papers
 
         all_papers = []
-        papers_per_category = max(1, max_papers // len(self.categories))
+        papers_per_category = max_papers
 
         for category in self.categories:
             try:
                 logger.info(f"Fetching arXiv papers for category '{category}'")
-                feed_xml = self._fetch_arxiv_feed(category, papers_per_category)
+                feed_xml = self._fetch_arxiv_feed(
+                    category,
+                    papers_per_category,
+                    today=today,
+                )
                 papers = self._parse_atom_feed(feed_xml)
                 all_papers.extend(papers)
                 logger.info(f"Found {len(papers)} papers in category '{category}'")
 
                 # Stop if we've reached the limit
-                if len(all_papers) >= max_papers:
-                    all_papers = all_papers[:max_papers]
-                    break
+                # if len(all_papers) >= max_papers:
+                #     all_papers = all_papers[:max_papers]
+                #     break
 
             except Exception as e:
                 logger.error(f"Failed to fetch papers for category '{category}': {e}")
                 continue
 
-        logger.info(f"Total arXiv papers fetched: {len(all_papers)}")
-        return all_papers
+        # deduplication
+        arxiv_ids = set()
+        papers = []
+        for item in all_papers:
+            if item.arxiv_id not in arxiv_ids:
+                arxiv_ids.add(item.arxiv_id)
+                papers.append(item)
+
+        logger.info(f"Total arXiv papers fetched: {len(papers)}")
+        return papers
 
     def get_source_name(self) -> str:
         """Get source name."""
@@ -268,6 +295,10 @@ class ArxivSource(BaseSource):
 
         if self.max_papers <= 0:
             logger.error("max_papers must be positive")
+            return False
+
+        if not isinstance(self.lookback_days, int) or self.lookback_days <= 0:
+            logger.error("lookback_days must be a positive integer")
             return False
 
         return True

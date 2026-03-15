@@ -1,5 +1,7 @@
 """Tests for arXiv source implementation."""
 
+from datetime import datetime
+from urllib.parse import parse_qs, urlparse
 from unittest.mock import Mock, patch
 
 import pytest
@@ -37,11 +39,12 @@ SAMPLE_ATOM_FEED = """<?xml version="1.0" encoding="UTF-8"?>
 
 def test_arxiv_source_initialization():
     """Test arXiv source initialization."""
-    config = {"categories": ["cs", "physics"], "max_papers": 50}
+    config = {"categories": ["cs", "physics"], "max_papers": 50, "lookback_days": 3}
     source = ArxivSource(config)
     assert source.source_name == "arxiv"
     assert source.categories == ["cs", "physics"]
     assert source.max_papers == 50
+    assert source.lookback_days == 3
 
 
 def test_arxiv_source_default_config():
@@ -52,6 +55,7 @@ def test_arxiv_source_default_config():
     # Actually default from ArxivSource.__init__ uses config.get("categories", ["cs", "physics", "math"])
     # Wait, we need to check. Let's trust the test will pass.
     assert source.max_papers == 100
+    assert source.lookback_days == 1
 
 
 def test_validate_categories():
@@ -75,13 +79,20 @@ def test_fetch_arxiv_feed(mock_get):
 
     config = {"categories": ["cs"]}
     source = ArxivSource(config)
-    feed_xml = source._fetch_arxiv_feed("cs", max_results=10)
+    feed_xml = source._fetch_arxiv_feed(
+        "cs",
+        max_results=10,
+        today=datetime(2026, 3, 15, 13, 45),
+    )
 
     assert feed_xml == SAMPLE_ATOM_FEED
     mock_get.assert_called_once()
     call_url = mock_get.call_args[0][0]
-    assert "search_query=cat%3Acs" in call_url
-    assert "max_results=10" in call_url
+    query = parse_qs(urlparse(call_url).query)
+    assert query["search_query"] == [
+        "cat:cs+AND+submittedDate:[202603140000+TO+202603150000]"
+    ]
+    assert query["max_results"] == ["10"]
     assert mock_get.call_args.kwargs["timeout"] == 30
 
 
@@ -125,6 +136,25 @@ def test_fetch_arxiv_feed_rate_limit(mock_get):
 
     assert feed_xml == SAMPLE_ATOM_FEED
     # The retry decorator will handle the Retry-After header
+
+
+@patch("arxiv_agent.sources.arxiv_source.requests.get")
+def test_fetch_arxiv_feed_custom_lookback_window(mock_get):
+    """Test fetching arXiv feed with a configurable lookback window."""
+    mock_response = Mock()
+    mock_response.text = SAMPLE_ATOM_FEED
+    mock_response.headers = {}
+    mock_response.raise_for_status = Mock()
+    mock_get.return_value = mock_response
+
+    source = ArxivSource({"categories": ["cs"], "lookback_days": 7})
+    source._fetch_arxiv_feed("cs", max_results=10, today=datetime(2026, 3, 15, 8, 0))
+
+    call_url = mock_get.call_args[0][0]
+    query = parse_qs(urlparse(call_url).query)
+    assert query["search_query"] == [
+        "cat:cs+AND+submittedDate:[202603080000+TO+202603150000]"
+    ]
 
 
 def test_parse_atom_feed():
@@ -228,6 +258,10 @@ def test_validate_config():
     config_zero_max_papers = {"categories": ["cs"], "max_papers": 0}
     source4 = ArxivSource(config_zero_max_papers)
     assert source4.validate_config() is False
+
+    config_invalid_lookback = {"categories": ["cs"], "lookback_days": 0}
+    source5 = ArxivSource(config_invalid_lookback)
+    assert source5.validate_config() is False
 
 
 def test_get_source_name():

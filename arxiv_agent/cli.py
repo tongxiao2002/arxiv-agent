@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -293,7 +293,7 @@ def _run_email_workflow(
 
 def _get_target_date(config: Config) -> date:
     """Return the current date in the configured timezone."""
-    return get_current_date_in_timezone(config.agent.timezone)
+    return get_current_date_in_timezone(config.agent.timezone) - timedelta(days=3)
 
 
 if __name__ == "__main__":

@@ -1,12 +1,16 @@
 """Classifier agent for LLM-based paper classification and summarization."""
 
+import asyncio
 import logging
+import threading
 from datetime import date
-from typing import Any, Dict, List, Tuple
+from typing import Any, Coroutine, Dict, List, Optional, Tuple, TypeVar
 
 from arxiv_agent.agents.base import BaseAgent
 from arxiv_agent.config import AdvancedConfig, LLMConfig
-from arxiv_agent.llm import classify_paper, summarize_abstract
+from arxiv_agent.llm.classifier import aclassify_paper
+from arxiv_agent.llm.provider_utils import get_provider_api_key, get_provider_env_var
+from arxiv_agent.llm.summarizer import asummarize_abstract
 from arxiv_agent.sources.base_source import Paper
 from arxiv_agent.sources.enhanced_paper import EnhancedPaper
 from arxiv_agent.storage.json_storage import JsonStorage
@@ -15,6 +19,7 @@ from arxiv_agent.utils.runtime import RuntimeOptions, describe_retry_error
 from arxiv_agent.utils.timezone import get_current_date_in_timezone
 
 logger = logging.getLogger(__name__)
+T = TypeVar("T")
 
 
 class ClassifierAgent(BaseAgent):
@@ -158,6 +163,47 @@ class ClassifierAgent(BaseAgent):
         pending = [paper for paper in papers if not isinstance(paper, EnhancedPaper)]
         return enhanced, pending
 
+    def _run_coroutine(self, coro: Coroutine[object, object, T]) -> T:
+        """Run async processing from the synchronous agent entrypoint."""
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(coro)
+
+        result: list[T] = []
+        error: list[BaseException] = []
+
+        def _runner() -> None:
+            try:
+                result.append(asyncio.run(coro))
+            except BaseException as exc:  # pragma: no cover - passthrough
+                error.append(exc)
+
+        thread = threading.Thread(target=_runner, daemon=True)
+        thread.start()
+        thread.join()
+
+        if error:
+            raise error[0]
+
+        return result[0]
+
+    async def _create_openai_client(self) -> Any:
+        """Create a shared AsyncOpenAI client for one agent run."""
+        try:
+            from openai import AsyncOpenAI
+        except ImportError:
+            raise ValueError(
+                "OpenAI library not installed. Install with: pip install openai"
+            )
+
+        api_key = get_provider_api_key("openai")
+        if not api_key:
+            env_var = get_provider_env_var("openai")
+            raise ValueError(f"{env_var} environment variable not set")
+
+        return AsyncOpenAI(api_key=api_key, base_url=self.llm_config.base_url)
+
     def _process_papers(
         self,
         papers: List[Paper],
@@ -166,70 +212,123 @@ class ClassifierAgent(BaseAgent):
         already_enhanced: List[EnhancedPaper],
     ) -> Dict[str, Any]:
         """Process papers through classification and summarization."""
+        return self._run_coroutine(
+            self._process_papers_async(
+                papers,
+                target_date,
+                already_enhanced=already_enhanced,
+            )
+        )
+
+    async def _process_papers_async(
+        self,
+        papers: List[Paper],
+        target_date: date,
+        *,
+        already_enhanced: List[EnhancedPaper],
+    ) -> Dict[str, Any]:
+        """Process papers through classification and summarization concurrently."""
         enhanced_papers = []
         errors = []
         classified_count = 0
         summarized_count = 0
+        max_concurrent = min(5, max(1, len(papers)))
+        shared_client: Optional[Any] = None
 
-        for i, paper in enumerate(papers):
-            paper_id = paper.arxiv_id or paper.paper_id or f"paper-{i}"
+        if self.llm_config.provider.lower() == "openai":
+            shared_client = await self._create_openai_client()
+
+        async def _process_one(
+            index: int, paper: Paper
+        ) -> Tuple[Optional[EnhancedPaper], int, int, List[str]]:
+            paper_id = paper.arxiv_id or paper.paper_id or f"paper-{index}"
             logger.info(
                 "Processing paper %s/%s: %s...",
-                i + 1,
+                index + 1,
                 len(papers),
                 paper.title[:100],
             )
 
-            try:
-                classification_result = classify_paper(
+            classification_result, summary_result = await asyncio.gather(
+                aclassify_paper(
                     paper,
                     self.llm_config,
                     self.topics,
                     self.runtime_options,
-                )
-                classified_count += 1
-
-                summary = summarize_abstract(
+                    client=shared_client,
+                ),
+                asummarize_abstract(
                     paper,
                     self.llm_config,
                     self.runtime_options,
-                )
-                summarized_count += 1
+                    client=shared_client,
+                ),
+                return_exceptions=True,
+            )
 
-                # Create enhanced paper
-                enhanced_paper = EnhancedPaper.from_paper(
-                    paper,
-                    relevance_score=classification_result["relevance_score"],
-                    is_relevant=classification_result["is_relevant"],
-                    matched_topics=classification_result["matched_topics"],
-                    classification_reason=classification_result[
-                        "classification_reason"
-                    ],
-                    summary=summary,
+            paper_errors = []
+            paper_classified = 0
+            paper_summarized = 0
+
+            if isinstance(classification_result, Exception):
+                paper_errors.append(
+                    self._format_processing_error(paper_id, classification_result)
                 )
+            else:
+                paper_classified = 1
+
+            if isinstance(summary_result, Exception):
+                paper_errors.append(
+                    self._format_processing_error(paper_id, summary_result)
+                )
+            else:
+                paper_summarized = 1
+
+            if paper_errors:
+                return None, paper_classified, paper_summarized, paper_errors
+
+            enhanced_paper = EnhancedPaper.from_paper(
+                paper,
+                relevance_score=classification_result["relevance_score"],
+                is_relevant=classification_result["is_relevant"],
+                matched_topics=classification_result["matched_topics"],
+                classification_reason=classification_result["classification_reason"],
+                summary=summary_result,
+            )
+            logger.debug(
+                "Paper '%s...' classified: relevant=%s, score=%.2f",
+                paper.title[:50],
+                classification_result["is_relevant"],
+                classification_result["relevance_score"],
+            )
+            return enhanced_paper, paper_classified, paper_summarized, []
+
+        semaphore = asyncio.Semaphore(max_concurrent)
+
+        async def _process_with_limit(
+            index: int, paper: Paper
+        ) -> Tuple[Optional[EnhancedPaper], int, int, List[str]]:
+            async with semaphore:
+                return await _process_one(index, paper)
+
+        try:
+            results = await asyncio.gather(
+                *[
+                    asyncio.create_task(_process_with_limit(index, paper))
+                    for index, paper in enumerate(papers)
+                ]
+            )
+        finally:
+            if shared_client is not None:
+                await shared_client.close()
+
+        for enhanced_paper, paper_classified, paper_summarized, paper_errors in results:
+            classified_count += paper_classified
+            summarized_count += paper_summarized
+            errors.extend(paper_errors)
+            if enhanced_paper is not None:
                 enhanced_papers.append(enhanced_paper)
 
-                logger.debug(
-                    "Paper '%s...' classified: relevant=%s, score=%.2f",
-                    paper.title[:50],
-                    classification_result["is_relevant"],
-                    classification_result["relevance_score"],
-                )
-
-            except Exception as exc:
-                if isinstance(exc, RetryError):
-                    error_msg = describe_retry_error(
-                        exc,
-                        f"Failed to process paper {paper_id}",
-                    )
-                else:
-                    error_msg = f"Failed to process paper {paper_id}: {exc}"
-                logger.error(error_msg)
-                errors.append(error_msg)
-                # Continue with next paper
-                continue
-
-        # Save enhanced papers
         enhanced_saved = 0
         papers_to_save = [*already_enhanced, *enhanced_papers]
         if papers_to_save:
@@ -254,6 +353,15 @@ class ClassifierAgent(BaseAgent):
             "errors": errors,
             "target_date": target_date.isoformat(),
         }
+
+    def _format_processing_error(self, paper_id: str, exc: Exception) -> str:
+        """Format processing errors while preserving retry root causes."""
+        if isinstance(exc, RetryError):
+            return describe_retry_error(
+                exc,
+                f"Failed to process paper {paper_id}",
+            )
+        return f"Failed to process paper {paper_id}: {exc}"
 
     def validate(self) -> bool:
         """

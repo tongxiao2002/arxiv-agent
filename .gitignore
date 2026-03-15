@@ -12,6 +12,7 @@ logs/
 papers/
 archive/
 .env
+config.yaml
 *.log
 *.sqlite
 *.db

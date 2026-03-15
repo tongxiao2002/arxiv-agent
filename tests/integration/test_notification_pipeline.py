@@ -1,7 +1,7 @@
 """Integration test for the Phase 4 notification pipeline."""
 
 from datetime import date
-from unittest.mock import Mock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 from arxiv_agent.cli import run_once_command
 from arxiv_agent.config import Config
@@ -69,6 +69,8 @@ def test_notification_pipeline_end_to_end(temp_dir, monkeypatch):
             return date.fromisoformat(value)
 
     smtp_client = Mock()
+    shared_client = Mock()
+    shared_client.close = AsyncMock()
 
     with patch(
         "arxiv_agent.cli.get_current_date_in_timezone", return_value=target_date
@@ -78,26 +80,33 @@ def test_notification_pipeline_end_to_end(temp_dir, monkeypatch):
             return_value=[sample_paper],
         ):
             with patch(
-                "arxiv_agent.agents.classifier_agent.classify_paper",
-                return_value={
-                    "relevance_score": 0.95,
-                    "is_relevant": True,
-                    "matched_topics": ["agents"],
-                    "classification_reason": "Strong fit.",
-                },
+                "arxiv_agent.agents.classifier_agent.ClassifierAgent._create_openai_client",
+                new=AsyncMock(return_value=shared_client),
             ):
                 with patch(
-                    "arxiv_agent.agents.classifier_agent.summarize_abstract",
-                    return_value="Short summary.",
+                    "arxiv_agent.agents.classifier_agent.aclassify_paper",
+                    new=AsyncMock(
+                        return_value={
+                            "relevance_score": 0.95,
+                            "is_relevant": True,
+                            "matched_topics": ["agents"],
+                            "classification_reason": "Strong fit.",
+                        }
+                    ),
                 ):
                     with patch(
-                        "arxiv_agent.email.sender.smtplib.SMTP",
-                        return_value=smtp_client,
+                        "arxiv_agent.agents.classifier_agent.asummarize_abstract",
+                        new=AsyncMock(return_value="Short summary."),
                     ):
-                        with patch("arxiv_agent.storage.archiver.date", MockDate):
-                            result = run_once_command(config, dry_run=False)
+                        with patch(
+                            "arxiv_agent.email.sender.smtplib.SMTP",
+                            return_value=smtp_client,
+                        ):
+                            with patch("arxiv_agent.storage.archiver.date", MockDate):
+                                result = run_once_command(config, dry_run=False)
 
     assert result["success"] is True
     assert smtp_client.send_message.call_count == 1
     assert (papers_dir / "papers_2026-03-12.json").exists()
     assert (archive_dir / "papers_2026-01.tar.gz").exists()
+    shared_client.close.assert_awaited_once()

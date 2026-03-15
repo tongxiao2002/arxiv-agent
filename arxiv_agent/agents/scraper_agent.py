@@ -1,7 +1,7 @@
 """Scraper agent for fetching papers from configured sources."""
 
 import logging
-from datetime import date
+from datetime import date, datetime, time, timedelta
 from typing import Any, Dict, List
 
 from arxiv_agent.agents.base import BaseAgent
@@ -93,7 +93,14 @@ class ScraperAgent(BaseAgent):
 
         # Fetch papers
         logger.info("Fetching papers from %s", self.source.source_name)
-        papers = self.source.fetch_papers(max_papers=max_papers)
+        if self.source.source_name == "arxiv":
+            fetch_today = datetime.combine(target_date, time.min)
+            papers = self.source.fetch_papers(
+                max_papers=max_papers,
+                today=fetch_today,
+            )
+        else:
+            papers = self.source.fetch_papers(max_papers=max_papers)
 
         if not papers:
             logger.warning("No papers fetched from %s", self.source.source_name)

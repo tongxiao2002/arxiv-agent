@@ -13,7 +13,7 @@ sources:
   # "papers_cool" remains a planned future source and will fail fast at startup.
   arxiv:
     # arXiv categories to scan (see https://arxiv.org/category_taxonomy)
-    categories: ["cs", "physics", "math", "stat"]
+    categories: ["cs.LG"]
     # Maximum papers to fetch per category per day
     max_papers: 100
   papers_cool:
@@ -32,11 +32,12 @@ topics:
 
 # Daily schedule (24-hour format)
 schedule:
-  scan_time: "00:00"   # Fetch and classify papers at midnight
+  scan_time: "01:00"   # Fetch and classify papers at midnight
   email_time: "09:00"  # Send email digest at 9 AM
 
 # LLM configuration
 llm:
+  base_url: "https://api.openai.com/v1"
   provider: "openai"  # Supported today: "openai" or "anthropic"
   # "local" remains planned future work and will fail fast at startup.
   model: "gpt-4o-mini"  # Example only: choose a model available in your account
@@ -47,8 +48,8 @@ llm:
 # Email delivery configuration
 email:
   smtp_host: "smtp.gmail.com"
-  smtp_port: 587
-  smtp_security: "starttls"  # "starttls", "ssl", or "none"
+  smtp_port: 465
+  smtp_security: "ssl"  # "starttls", "ssl", or "none"
   smtp_username: "your-email@example.com"
   from_email: "arxiv-agent@example.com"  # Sender email address
   to_emails:
@@ -64,8 +65,8 @@ storage:
   retention_days: 30        # Number of days to keep data before archiving
 
 # Advanced settings (optional)
-#advanced:
-#  max_retries: 5            # Maximum retries for source, LLM, and SMTP operations
-#  retry_backoff_factor: 2   # Exponential backoff factor
-#  request_timeout: 30       # HTTP request timeout in seconds
-#  log_level: "INFO"         # Logging level: DEBUG, INFO, WARNING, ERROR, CRITICAL
+advanced:
+  max_retries: 5            # Maximum retries for source, LLM, and SMTP operations
+  retry_backoff_factor: 2   # Exponential backoff factor
+  request_timeout: 30       # HTTP request timeout in seconds
+  log_level: "INFO"         # Logging level: DEBUG, INFO, WARNING, ERROR, CRITICAL

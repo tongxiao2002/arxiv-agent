@@ -1,14 +1,21 @@
 """LLM-based paper classification for Arxiv-Agent."""
 
+import asyncio
 import logging
-from typing import Any, Dict, List, Optional, Tuple
+import threading
+from typing import Any, Coroutine, Dict, List, Optional, Tuple, TypeVar
 
 from arxiv_agent.config import LLMConfig
 from arxiv_agent.llm.provider_utils import get_provider_api_key, get_provider_env_var
 from arxiv_agent.sources.base_source import Paper
-from arxiv_agent.utils.runtime import RuntimeOptions, call_with_retry
+from arxiv_agent.utils.runtime import (
+    RuntimeOptions,
+    call_with_retry,
+    call_with_retry_async,
+)
 
 logger = logging.getLogger(__name__)
+T = TypeVar("T")
 
 
 class LLMError(Exception):
@@ -114,30 +121,77 @@ def _parse_classification_response(response_text: str) -> Dict[str, Any]:
     return data
 
 
+def _run_coroutine(coro: Coroutine[object, object, T]) -> T:
+    """Run a coroutine from sync code, even if a loop is already active."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+
+    result: list[T] = []
+    error: list[BaseException] = []
+
+    def _runner() -> None:
+        try:
+            result.append(asyncio.run(coro))
+        except BaseException as exc:  # pragma: no cover - passthrough
+            error.append(exc)
+
+    thread = threading.Thread(target=_runner, daemon=True)
+    thread.start()
+    thread.join()
+
+    if error:
+        raise error[0]
+
+    return result[0]
+
+
 def _call_openai_api(
     prompt: str,
     config: LLMConfig,
     runtime_options: Optional[RuntimeOptions] = None,
 ) -> str:
     """Make API call to OpenAI with retry logic."""
-    try:
-        from openai import OpenAI
-    except ImportError:
-        raise LLMConfigurationError(
-            "OpenAI library not installed. Install with: pip install openai"
+    return _run_coroutine(
+        _call_openai_api_async(
+            prompt,
+            config,
+            runtime_options=runtime_options,
         )
+    )
 
+
+async def _call_openai_api_async(
+    prompt: str,
+    config: LLMConfig,
+    runtime_options: Optional[RuntimeOptions] = None,
+    client: Optional[Any] = None,
+) -> str:
+    """Make async API call to OpenAI with optional shared client reuse."""
     runtime = runtime_options or RuntimeOptions()
-    api_key = get_provider_api_key("openai")
-    if not api_key:
-        env_var = get_provider_env_var("openai")
-        raise LLMConfigurationError(f"{env_var} environment variable not set")
+    managed_client = client
+    should_close = False
 
-    client = OpenAI(api_key=api_key)
-
-    def operation() -> str:
+    if managed_client is None:
         try:
-            response = client.chat.completions.create(
+            from openai import AsyncOpenAI
+        except ImportError:
+            raise LLMConfigurationError(
+                "OpenAI library not installed. Install with: pip install openai"
+            )
+
+        api_key = get_provider_api_key("openai")
+        if not api_key:
+            env_var = get_provider_env_var("openai")
+            raise LLMConfigurationError(f"{env_var} environment variable not set")
+
+        managed_client = AsyncOpenAI(api_key=api_key, base_url=config.base_url)
+        should_close = True
+
+    async def operation() -> str:
+        try:
+            response = await managed_client.chat.completions.create(
                 model=config.model,
                 messages=[
                     {
@@ -147,7 +201,7 @@ def _call_openai_api(
                     {"role": "user", "content": prompt},
                 ],
                 temperature=config.classification_temperature,
-                max_tokens=500,
+                max_tokens=4096,
                 response_format={"type": "json_object"},
                 timeout=runtime.request_timeout,
             )
@@ -158,12 +212,16 @@ def _call_openai_api(
                 provider="openai",
             ) from exc
 
-    return call_with_retry(
-        operation,
-        operation_name="_call_openai_api",
-        max_retries=runtime.max_retries,
-        backoff_factor=runtime.retry_backoff_factor,
-    )
+    try:
+        return await call_with_retry_async(
+            operation,
+            operation_name="_call_openai_api_async",
+            max_retries=runtime.max_retries,
+            backoff_factor=runtime.retry_backoff_factor,
+        )
+    finally:
+        if should_close:
+            await managed_client.close()
 
 
 def _call_anthropic_api(
@@ -191,7 +249,7 @@ def _call_anthropic_api(
         try:
             response = client.messages.create(
                 model=config.model,
-                max_tokens=500,
+                max_tokens=4096,
                 temperature=config.classification_temperature,
                 system="You are a helpful research assistant. Respond with valid JSON only.",
                 messages=[{"role": "user", "content": prompt}],
@@ -279,6 +337,57 @@ def classify_paper(
         raise ClassificationError(f"Failed to process classification response: {e}")
 
 
+async def aclassify_paper(
+    paper: Paper,
+    config: LLMConfig,
+    topics: List[str],
+    runtime_options: Optional[RuntimeOptions] = None,
+    client: Optional[Any] = None,
+) -> Dict[str, Any]:
+    """Asynchronously classify a paper's relevance using LLM."""
+    logger.info(f"Classifying paper: {paper.title[:100]}...")
+
+    if not paper.title or not paper.abstract:
+        raise ClassificationError("Paper must have title and abstract")
+
+    if not topics:
+        raise ClassificationError("No topics provided for classification")
+
+    prompt = _format_classification_prompt(paper, topics)
+    provider = config.provider.lower()
+
+    try:
+        if provider == "openai":
+            response_text = await _call_openai_api_async(
+                prompt,
+                config,
+                runtime_options=runtime_options,
+                client=client,
+            )
+        elif provider == "anthropic":
+            response_text = _call_anthropic_api(prompt, config, runtime_options)
+        elif provider == "local":
+            raise ProviderNotSupportedError(
+                "Local provider not yet implemented. Use 'openai' or 'anthropic'."
+            )
+        else:
+            raise ProviderNotSupportedError(f"Unsupported LLM provider: {provider}")
+    except Exception as e:
+        logger.error(f"LLM classification failed for paper {paper.title}: {e}")
+        raise
+
+    try:
+        result = _parse_classification_response(response_text)
+        logger.info(
+            f"Classification result for '{paper.title[:50]}...': "
+            f"relevance={result['relevance_score']:.2f}, "
+            f"relevant={result['is_relevant']}"
+        )
+        return result
+    except Exception as e:
+        raise ClassificationError(f"Failed to process classification response: {e}")
+
+
 def batch_classify_papers(
     papers: List[Paper],
     config: LLMConfig,
@@ -296,20 +405,67 @@ def batch_classify_papers(
 
     Returns:
         List of (paper, classification_result) tuples
-
-    Note:
-        Currently implements sequential processing. Concurrent version
-        can be added later when needed.
     """
-    results = []
-    for i, paper in enumerate(papers):
-        logger.info(f"Classifying paper {i+1}/{len(papers)}: {paper.title[:100]}...")
-        try:
-            result = classify_paper(paper, config, topics)
-            results.append((paper, result))
-        except Exception as e:
-            logger.error(f"Failed to classify paper '{paper.title}': {e}")
-            # Continue with other papers
-            continue
+    return _run_coroutine(
+        abatch_classify_papers(
+            papers,
+            config,
+            topics,
+            max_concurrent=max_concurrent,
+        )
+    )
 
-    return results
+
+async def abatch_classify_papers(
+    papers: List[Paper],
+    config: LLMConfig,
+    topics: List[str],
+    max_concurrent: int = 5,
+    client: Optional[Any] = None,
+) -> List[Tuple[Paper, Dict[str, Any]]]:
+    """Classify multiple papers concurrently."""
+    if max_concurrent <= 0:
+        raise ValueError("max_concurrent must be a positive integer")
+
+    semaphore = asyncio.Semaphore(max_concurrent)
+
+    async def _classify_one(
+        index: int, paper: Paper
+    ) -> Optional[Tuple[Paper, Dict[str, Any]]]:
+        async with semaphore:
+            logger.info(
+                "Classifying paper %s/%s: %s...",
+                index + 1,
+                len(papers),
+                paper.title[:100],
+            )
+            try:
+                if client is not None and config.provider.lower() == "openai":
+                    result = await aclassify_paper(
+                        paper,
+                        config,
+                        topics,
+                        client=client,
+                    )
+                else:
+                    result = await asyncio.to_thread(
+                        classify_paper,
+                        paper,
+                        config,
+                        topics,
+                    )
+                return (paper, result)
+            except Exception as exc:
+                logger.error(
+                    "Failed to classify paper '%s': %s",
+                    paper.title,
+                    exc,
+                )
+                return None
+
+    tasks = [
+        asyncio.create_task(_classify_one(index, paper))
+        for index, paper in enumerate(papers)
+    ]
+    results = await asyncio.gather(*tasks)
+    return [result for result in results if result is not None]

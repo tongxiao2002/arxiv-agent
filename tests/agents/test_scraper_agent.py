@@ -1,6 +1,6 @@
 """Tests for scraper agent."""
 
-from datetime import date
+from datetime import date, datetime
 from unittest.mock import Mock, patch
 
 import pytest
@@ -170,7 +170,10 @@ def test_scraper_agent_run_success_arxiv(mock_save, mock_fetch, mock_now):
     assert result["source"] == "arxiv"
     assert result["storage_date"] == "2023-01-15"
     assert "categories" in result
-    mock_fetch.assert_called_once_with(max_papers=50)
+    mock_fetch.assert_called_once_with(
+        max_papers=50,
+        today=datetime(2023, 1, 16, 0, 0),
+    )
     mock_save.assert_called_once_with(date(2023, 1, 15), mock_papers)
 
 
@@ -205,9 +208,11 @@ def test_scraper_agent_run_success_papers_cool(mock_save, mock_fetch, mock_now):
     mock_save.assert_called_once_with(date(2023, 1, 16), mock_papers)
 
 
+@patch("arxiv_agent.agents.scraper_agent.get_current_date_in_timezone")
 @patch.object(ArxivSource, "fetch_papers")
-def test_scraper_agent_run_no_papers(mock_fetch):
+def test_scraper_agent_run_no_papers(mock_fetch, mock_now):
     """Test scraper agent run when no papers are fetched."""
+    mock_now.return_value = date(2023, 1, 15)
     mock_fetch.return_value = []
 
     config = {
@@ -224,7 +229,10 @@ def test_scraper_agent_run_no_papers(mock_fetch):
     assert result["success"] is True
     assert result["papers_fetched"] == 0
     assert result["message"] == "No papers fetched"
-    mock_fetch.assert_called_once()
+    mock_fetch.assert_called_once_with(
+        max_papers=50,
+        today=datetime(2023, 1, 16, 0, 0),
+    )
 
 
 @patch("arxiv_agent.agents.scraper_agent.get_current_date_in_timezone")
