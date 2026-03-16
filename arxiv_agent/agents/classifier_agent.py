@@ -232,7 +232,7 @@ class ClassifierAgent(BaseAgent):
         errors = []
         classified_count = 0
         summarized_count = 0
-        max_concurrent = min(5, max(1, len(papers)))
+        max_concurrent = min(32, max(1, len(papers)))
         shared_client: Optional[Any] = None
 
         if self.llm_config.provider.lower() == "openai":
