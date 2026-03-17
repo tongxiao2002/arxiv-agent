@@ -1,11 +1,12 @@
 """Tests for the ClassifierAgent."""
 
-from datetime import date
+from datetime import date, datetime, timezone
 from unittest.mock import AsyncMock, Mock, patch
 
 from arxiv_agent.agents.classifier_agent import ClassifierAgent
 from arxiv_agent.sources.base_source import Paper
 from arxiv_agent.sources.enhanced_paper import EnhancedPaper
+from arxiv_agent.storage.json_storage import JsonStorage
 
 
 def make_config():
@@ -125,3 +126,79 @@ def test_classifier_agent_preserves_retry_root_cause_in_errors():
     assert result["success"] is False
     assert "LLM timeout" in result["errors"][0]
     shared_client.close.assert_awaited_once()
+
+
+def test_classifier_agent_only_processes_new_raw_papers_after_duplicate_safe_merge(
+    temp_dir,
+):
+    """Test reruns only classify newly added raw papers after storage merges."""
+    target_date = date(2026, 3, 12)
+    storage = JsonStorage(str(temp_dir))
+    storage.save_papers(
+        target_date,
+        [
+            EnhancedPaper(
+                title="Already Enhanced",
+                abstract="Processed already.",
+                authors=["Author"],
+                arxiv_id="2501.99999",
+                paper_id="2501.99999",
+                publication_date=datetime(2026, 3, 12, 1, 0, tzinfo=timezone.utc),
+                source="arxiv",
+                is_relevant=True,
+                summary="Existing summary",
+                matched_topics=["agents"],
+                relevance_score=0.95,
+                classification_reason="Already processed.",
+            ),
+            Paper(
+                title="New Raw",
+                abstract="Fresh abstract about agents.",
+                authors=["Author"],
+                arxiv_id="2501.12345",
+                paper_id="2501.12345",
+                publication_date=datetime(2026, 3, 12, 2, 0, tzinfo=timezone.utc),
+                source="arxiv",
+            ),
+        ],
+    )
+
+    config = make_config()
+    config["storage"]["data_dir"] = str(temp_dir)
+    agent = ClassifierAgent(config)
+
+    shared_client = Mock()
+    shared_client.close = AsyncMock()
+
+    with patch(
+        "arxiv_agent.agents.classifier_agent.ClassifierAgent._create_openai_client",
+        new=AsyncMock(return_value=shared_client),
+    ):
+        with patch(
+            "arxiv_agent.agents.classifier_agent.aclassify_paper",
+            new=AsyncMock(
+                return_value={
+                    "relevance_score": 0.8,
+                    "is_relevant": True,
+                    "matched_topics": ["agents"],
+                    "classification_reason": "New match.",
+                }
+            ),
+        ) as mock_classify:
+            with patch(
+                "arxiv_agent.agents.classifier_agent.asummarize_abstract",
+                new=AsyncMock(return_value="Fresh summary."),
+            ) as mock_summarize:
+                result = agent.run(target_date=target_date)
+
+    assert result["success"] is True
+    assert result["papers_processed"] == 1
+    assert result["papers_skipped"] == 1
+    assert result["enhanced_papers"] == 1
+    mock_classify.assert_awaited_once()
+    mock_summarize.assert_awaited_once()
+    shared_client.close.assert_awaited_once()
+
+    saved_papers = storage.load_papers(target_date)
+    assert len(saved_papers) == 2
+    assert all(isinstance(paper, EnhancedPaper) for paper in saved_papers)

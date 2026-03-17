@@ -271,3 +271,84 @@ def test_json_storage_merge_preserves_unrelated_and_upgrades_enhanced(temp_dir):
     assert isinstance(by_id["raw-1"], EnhancedPaper)
     assert by_id["raw-1"].summary == "Upgraded summary"
     assert isinstance(by_id["other-1"], EnhancedPaper)
+
+
+def test_json_storage_merge_keeps_existing_raw_when_incoming_duplicate_is_raw(temp_dir):
+    """Test duplicate raw metadata does not overwrite an already stored raw record."""
+    storage = JsonStorage(data_dir=str(temp_dir))
+    target_date = date(2026, 3, 11)
+
+    existing_raw = Paper(
+        title="Existing Raw",
+        abstract="Original abstract",
+        authors=["Author"],
+        arxiv_id="raw-keep",
+        paper_id="raw-keep",
+        publication_date=datetime(2026, 3, 11, 1, 0, tzinfo=timezone.utc),
+        source="arxiv",
+    )
+    incoming_duplicate = Paper(
+        title="Existing Raw",
+        abstract="Incoming abstract should not replace original",
+        authors=["Author"],
+        arxiv_id="raw-keep",
+        paper_id="raw-keep",
+        publication_date=datetime(2026, 3, 11, 1, 5, tzinfo=timezone.utc),
+        source="arxiv",
+    )
+    new_raw = Paper(
+        title="New Raw",
+        abstract="New abstract",
+        authors=["Author"],
+        arxiv_id="raw-new",
+        paper_id="raw-new",
+        publication_date=datetime(2026, 3, 11, 2, 0, tzinfo=timezone.utc),
+        source="arxiv",
+    )
+
+    storage.save_papers(target_date, [existing_raw])
+    assert storage.merge_papers(target_date, [incoming_duplicate, new_raw]) is True
+
+    loaded = storage.load_papers(target_date)
+    by_id = {paper.arxiv_id: paper for paper in loaded}
+    assert set(by_id) == {"raw-keep", "raw-new"}
+    assert by_id["raw-keep"].abstract == "Original abstract"
+    assert by_id["raw-new"].abstract == "New abstract"
+
+
+def test_json_storage_merge_keeps_existing_enhanced_when_incoming_duplicate_is_raw(
+    temp_dir,
+):
+    """Test stored enhanced records win over later duplicate raw metadata."""
+    storage = JsonStorage(data_dir=str(temp_dir))
+    target_date = date(2026, 3, 12)
+
+    existing_enhanced = EnhancedPaper(
+        title="Enhanced",
+        abstract="Original abstract",
+        authors=["Author"],
+        arxiv_id="enhanced-1",
+        paper_id="enhanced-1",
+        publication_date=datetime(2026, 3, 12, 1, 0, tzinfo=timezone.utc),
+        source="arxiv",
+        is_relevant=True,
+        summary="Existing summary",
+        matched_topics=["agents"],
+    )
+    incoming_duplicate = Paper(
+        title="Enhanced",
+        abstract="Incoming raw abstract",
+        authors=["Author"],
+        arxiv_id="enhanced-1",
+        paper_id="enhanced-1",
+        publication_date=datetime(2026, 3, 12, 1, 5, tzinfo=timezone.utc),
+        source="arxiv",
+    )
+
+    storage.save_papers(target_date, [existing_enhanced])
+    assert storage.merge_papers(target_date, [incoming_duplicate]) is True
+
+    loaded = storage.load_papers(target_date)
+    assert len(loaded) == 1
+    assert isinstance(loaded[0], EnhancedPaper)
+    assert loaded[0].summary == "Existing summary"

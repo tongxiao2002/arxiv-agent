@@ -295,7 +295,13 @@ class JsonStorage:
         )
 
     def _select_preferred_paper(self, existing: Paper, incoming: Paper) -> Paper:
-        """Prefer the newer enhanced record without allowing raw downgrades."""
-        if isinstance(existing, EnhancedPaper) and not isinstance(incoming, EnhancedPaper):
+        """Preserve stored papers unless the incoming record upgrades raw to enhanced."""
+        if isinstance(existing, EnhancedPaper) and not isinstance(
+            incoming, EnhancedPaper
+        ):
             return existing
-        return incoming
+        if not isinstance(existing, EnhancedPaper) and isinstance(
+            incoming, EnhancedPaper
+        ):
+            return incoming
+        return existing

@@ -14,8 +14,8 @@ sources:
   arxiv:
     # arXiv categories to scan (see https://arxiv.org/category_taxonomy)
     categories: ["cs.LG"]
-    # Maximum papers to fetch per category per day
-    max_papers: 100
+    # Maximum papers to fetch per category per run (-1 means no cap; fetched in 100-paper pages)
+    max_papers: -1
   papers_cool:
     # Reserved for future implementation. Do not select as sources.primary yet.
     categories: ["cs.ai", "cs.lg", "cs.cv", "cs.cl"]

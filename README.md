@@ -49,7 +49,7 @@ sources:
   primary: "arxiv"
   arxiv:
     categories: ["cs", "stat"]
-    max_papers: 25
+    max_papers: -1
 
 topics:
   - "machine learning"
@@ -138,6 +138,8 @@ python -m arxiv_agent.cli version
 - Logs are written to `storage.log_dir` and honor `advanced.log_level`.
 - `advanced.max_retries`, `advanced.retry_backoff_factor`, and `advanced.request_timeout` now apply to source fetches, LLM calls, and SMTP delivery retries.
 - The app logs an effective runtime summary at startup without printing secrets.
+- arXiv fetches in 100-paper pages; `sources.arxiv.max_papers: -1` means no per-category cap and positive values remain per-category caps.
+- Re-running arXiv scraping for a day merges in only new paper identities and preserves papers already stored for that date.
 - Re-running classification for a day skips papers that are already stored as enhanced results.
 - Interval `run-once` writes back into the existing daily JSON files and may augment a day instead of replacing it.
 - When interval mode spans multiple local days, classification and email execution happen per affected day.
@@ -146,6 +148,7 @@ python -m arxiv_agent.cli version
 
 - `agent.timezone`: IANA timezone used for date selection and scheduling.
 - `sources.primary`: Supported value is currently `arxiv`.
+- `sources.arxiv.max_papers`: arXiv-only. Use `-1` for unlimited per-category paging, or a positive integer for a per-category cap.
 - `topics`: At least one non-empty topic is required.
 - `llm.provider`: Supported values are `openai` and `anthropic`.
 - `llm.model`: Set this to a model available in your provider account.

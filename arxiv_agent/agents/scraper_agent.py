@@ -83,7 +83,11 @@ class ScraperAgent(BaseAgent):
         if run_interval is not None and not isinstance(run_interval, RunOnceInterval):
             raise ValueError("run_interval must be a RunOnceInterval")
 
-        target_date = None if run_interval is not None else self._parse_target_date(*args, **kwargs)
+        target_date = (
+            None
+            if run_interval is not None
+            else self._parse_target_date(*args, **kwargs)
+        )
 
         # Validate source configuration
         if not self.source.validate_config():
@@ -100,10 +104,12 @@ class ScraperAgent(BaseAgent):
         logger.info("Fetching papers from %s", self.source.source_name)
         if run_interval is not None:
             if self.source.source_name != "arxiv":
-                raise ValueError("Interval run-once is only supported for the arXiv source")
+                raise ValueError(
+                    "Interval run-once is only supported for the arXiv source"
+                )
             papers = self.source.fetch_papers_for_interval(
                 run_interval,
-                max_papers=None,
+                max_papers=max_papers,
             )
         elif self.source.source_name == "arxiv":
             assert target_date is not None
@@ -151,10 +157,13 @@ class ScraperAgent(BaseAgent):
             }
 
         assert target_date is not None
-        success = self.storage.save_papers(target_date, papers)
+        if self.source.source_name == "arxiv":
+            success = self.storage.merge_papers(target_date, papers)
+        else:
+            success = self.storage.save_papers(target_date, papers)
 
         if not success:
-            raise RuntimeError("Failed to save papers to storage")
+            raise RuntimeError("Failed to persist papers to storage")
 
         logger.info(
             "Successfully fetched and stored %s papers from %s",

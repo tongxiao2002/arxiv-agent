@@ -133,8 +133,8 @@ def test_scraper_agent_validate_missing_data_dir():
 
 @patch("arxiv_agent.agents.scraper_agent.get_current_date_in_timezone")
 @patch.object(ArxivSource, "fetch_papers")
-@patch.object(JsonStorage, "save_papers")
-def test_scraper_agent_run_success_arxiv(mock_save, mock_fetch, mock_now):
+@patch.object(JsonStorage, "merge_papers")
+def test_scraper_agent_run_success_arxiv(mock_merge, mock_fetch, mock_now):
     """Test successful scraper agent run with arXiv source."""
     mock_now.return_value = date(2023, 1, 15)
 
@@ -154,7 +154,7 @@ def test_scraper_agent_run_success_arxiv(mock_save, mock_fetch, mock_now):
         ),
     ]
     mock_fetch.return_value = mock_papers
-    mock_save.return_value = True
+    mock_merge.return_value = True
 
     config = {
         "sources": {
@@ -176,7 +176,7 @@ def test_scraper_agent_run_success_arxiv(mock_save, mock_fetch, mock_now):
         max_papers=50,
         today=datetime(2023, 1, 16, 0, 0),
     )
-    mock_save.assert_called_once_with(date(2023, 1, 15), mock_papers)
+    mock_merge.assert_called_once_with(date(2023, 1, 15), mock_papers)
 
 
 @patch("arxiv_agent.agents.scraper_agent.get_current_date_in_timezone")
@@ -239,13 +239,13 @@ def test_scraper_agent_run_no_papers(mock_fetch, mock_now):
 
 @patch("arxiv_agent.agents.scraper_agent.get_current_date_in_timezone")
 @patch.object(ArxivSource, "fetch_papers")
-@patch.object(JsonStorage, "save_papers")
-def test_scraper_agent_run_save_failure(mock_save, mock_fetch, mock_now):
-    """Test scraper agent run when paper saving fails."""
+@patch.object(JsonStorage, "merge_papers")
+def test_scraper_agent_run_save_failure(mock_merge, mock_fetch, mock_now):
+    """Test scraper agent run when arXiv paper persistence fails."""
     mock_now.return_value = date(2023, 1, 15)
     mock_papers = [Mock(title="Paper", abstract="Abstract", authors=["Author"])]
     mock_fetch.return_value = mock_papers
-    mock_save.return_value = False
+    mock_merge.return_value = False
 
     config = {
         "sources": {
@@ -348,10 +348,71 @@ def test_scraper_agent_run_interval_groups_and_merges(mock_fetch, mock_merge):
     assert result["success"] is True
     assert result["affected_days"] == ["2026-03-10", "2026-03-11"]
     assert result["stored_by_day"] == {"2026-03-10": 1, "2026-03-11": 1}
-    mock_fetch.assert_called_once_with(interval, max_papers=None)
+    mock_fetch.assert_called_once_with(interval, max_papers=50)
     assert mock_merge.call_count == 2
     assert mock_merge.call_args_list[0].args[0] == date(2026, 3, 10)
     assert mock_merge.call_args_list[1].args[0] == date(2026, 3, 11)
+
+
+@patch("arxiv_agent.agents.scraper_agent.get_current_date_in_timezone")
+@patch.object(ArxivSource, "fetch_papers")
+def test_scraper_agent_daily_rerun_merges_without_overwriting_existing_raw(
+    mock_fetch,
+    mock_now,
+    temp_dir,
+):
+    """Test daily arXiv reruns preserve existing raw records and append new papers."""
+    target_date = date(2026, 3, 10)
+    mock_now.return_value = target_date
+    original_paper = Paper(
+        title="Original",
+        abstract="Keep me",
+        authors=["Author"],
+        arxiv_id="2603.00001",
+        paper_id="2603.00001",
+        publication_date=datetime(2026, 3, 10, 1, 0, tzinfo=timezone.utc),
+        source="arxiv",
+    )
+    duplicate_raw = Paper(
+        title="Original",
+        abstract="Incoming duplicate should lose",
+        authors=["Author"],
+        arxiv_id="2603.00001",
+        paper_id="2603.00001",
+        publication_date=datetime(2026, 3, 10, 1, 0, tzinfo=timezone.utc),
+        source="arxiv",
+    )
+    new_paper = Paper(
+        title="New",
+        abstract="Brand new paper",
+        authors=["Author"],
+        arxiv_id="2603.00002",
+        paper_id="2603.00002",
+        publication_date=datetime(2026, 3, 10, 2, 0, tzinfo=timezone.utc),
+        source="arxiv",
+    )
+    mock_fetch.side_effect = [[original_paper], [duplicate_raw, new_paper]]
+
+    config = {
+        "sources": {
+            "primary": "arxiv",
+            "arxiv": {"categories": ["cs"], "max_papers": 50},
+        },
+        "storage": {"data_dir": str(temp_dir)},
+    }
+
+    agent = ScraperAgent(config)
+    first_result = agent.run()
+    second_result = agent.run()
+
+    assert first_result["success"] is True
+    assert second_result["success"] is True
+
+    stored_papers = agent.get_stored_papers(target_date)
+    stored_by_id = {paper.arxiv_id: paper for paper in stored_papers}
+    assert set(stored_by_id) == {"2603.00001", "2603.00002"}
+    assert stored_by_id["2603.00001"].abstract == "Keep me"
+    assert stored_by_id["2603.00002"].abstract == "Brand new paper"
 
 
 def test_scraper_agent_get_stored_papers():

@@ -43,7 +43,7 @@ class ArxivSourceConfig:
     """arXiv source configuration."""
 
     categories: List[str] = field(default_factory=lambda: ["cs", "physics", "math"])
-    max_papers: int = 100
+    max_papers: int = -1
     lookback_days: int = 1
 
 
@@ -195,6 +195,13 @@ class Config:
             or self.sources.arxiv.lookback_days <= 0
         ):
             errors.append("sources.arxiv.lookback_days must be a positive integer")
+
+        if (
+            not isinstance(self.sources.arxiv.max_papers, int)
+            or self.sources.arxiv.max_papers == 0
+            or self.sources.arxiv.max_papers < -1
+        ):
+            errors.append("sources.arxiv.max_papers must be -1 or a positive integer")
 
         if not self.topics or not all(
             isinstance(topic, str) and topic.strip() for topic in self.topics

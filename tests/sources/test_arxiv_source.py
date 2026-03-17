@@ -1,8 +1,8 @@
 """Tests for arXiv source implementation."""
 
 from datetime import datetime, timezone
-from urllib.parse import parse_qs, urlparse
 from unittest.mock import Mock, patch
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 
@@ -53,10 +53,8 @@ def test_arxiv_source_default_config():
     """Test arXiv source with default configuration."""
     config = {}
     source = ArxivSource(config)
-    assert source.categories == ["cs", "physics", "math"]  # default from base_source?
-    # Actually default from ArxivSource.__init__ uses config.get("categories", ["cs", "physics", "math"])
-    # Wait, we need to check. Let's trust the test will pass.
-    assert source.max_papers == 100
+    assert source.categories == ["cs.LG", "cs.CV"]
+    assert source.max_papers == -1
     assert source.lookback_days == 1
 
 
@@ -222,6 +220,112 @@ def test_fetch_papers(mock_get):
     assert mock_get.call_count == 2  # Called for each category
 
 
+def test_fetch_papers_pages_until_short_page_and_paces_between_requests():
+    """Test daily fetch pages in 100-result chunks until a short page is returned."""
+    source = ArxivSource({"categories": ["cs"], "max_papers": -1})
+    page_one = [
+        Paper(
+            title=f"paper-{index}",
+            abstract="",
+            authors=[],
+            arxiv_id=f"id-{index}",
+            paper_id=f"id-{index}",
+            publication_date=datetime(2026, 3, 10, 1, 0, tzinfo=timezone.utc),
+            source="arxiv",
+        )
+        for index in range(ARXIV_PAGE_SIZE)
+    ]
+    page_two = [
+        Paper(
+            title="duplicate",
+            abstract="",
+            authors=[],
+            arxiv_id="id-0",
+            paper_id="id-0",
+            publication_date=datetime(2026, 3, 10, 1, 10, tzinfo=timezone.utc),
+            source="arxiv",
+        ),
+        Paper(
+            title="new-paper",
+            abstract="",
+            authors=[],
+            arxiv_id="id-100",
+            paper_id="id-100",
+            publication_date=datetime(2026, 3, 10, 1, 20, tzinfo=timezone.utc),
+            source="arxiv",
+        ),
+    ]
+
+    with patch.object(source, "_sleep_between_page_requests") as mock_sleep:
+        with patch.object(
+            source,
+            "_fetch_arxiv_feed_page",
+            side_effect=["page-1", "page-2"],
+        ) as mock_fetch:
+            with patch.object(
+                source,
+                "_parse_atom_feed",
+                side_effect=[page_one, page_two],
+            ):
+                papers = source.fetch_papers(today=datetime(2026, 3, 11, 0, 0))
+
+    assert len(papers) == 101
+    assert mock_fetch.call_count == 2
+    assert mock_fetch.call_args_list[0].kwargs["start"] == 0
+    assert mock_fetch.call_args_list[0].kwargs["max_results"] == ARXIV_PAGE_SIZE
+    assert mock_fetch.call_args_list[1].kwargs["start"] == ARXIV_PAGE_SIZE
+    assert mock_fetch.call_args_list[1].kwargs["max_results"] == ARXIV_PAGE_SIZE
+    mock_sleep.assert_called_once_with()
+
+
+def test_fetch_papers_stops_at_positive_per_category_cap():
+    """Test daily fetch stops paging once the configured positive cap is reached."""
+    source = ArxivSource({"categories": ["cs"], "max_papers": 120})
+    page_one = [
+        Paper(
+            title=f"paper-{index}",
+            abstract="",
+            authors=[],
+            arxiv_id=f"id-{index}",
+            paper_id=f"id-{index}",
+            publication_date=datetime(2026, 3, 10, 1, 0, tzinfo=timezone.utc),
+            source="arxiv",
+        )
+        for index in range(ARXIV_PAGE_SIZE)
+    ]
+    page_two = [
+        Paper(
+            title=f"paper-{ARXIV_PAGE_SIZE + index}",
+            abstract="",
+            authors=[],
+            arxiv_id=f"id-{ARXIV_PAGE_SIZE + index}",
+            paper_id=f"id-{ARXIV_PAGE_SIZE + index}",
+            publication_date=datetime(2026, 3, 10, 1, 10, tzinfo=timezone.utc),
+            source="arxiv",
+        )
+        for index in range(20)
+    ]
+
+    with patch.object(source, "_sleep_between_page_requests") as mock_sleep:
+        with patch.object(
+            source,
+            "_fetch_arxiv_feed_page",
+            side_effect=["page-1", "page-2"],
+        ) as mock_fetch:
+            with patch.object(
+                source,
+                "_parse_atom_feed",
+                side_effect=[page_one, page_two],
+            ):
+                papers = source.fetch_papers()
+
+    assert len(papers) == 120
+    assert mock_fetch.call_count == 2
+    assert mock_fetch.call_args_list[0].kwargs["max_results"] == ARXIV_PAGE_SIZE
+    assert mock_fetch.call_args_list[1].kwargs["max_results"] == 20
+    mock_sleep.assert_called_once_with()
+
+
 @patch("arxiv_agent.sources.arxiv_source.requests.get")
 def test_fetch_papers_empty_response(mock_get):
     """Test fetching papers with empty response."""
@@ -257,13 +361,21 @@ def test_validate_config():
     source3 = ArxivSource(config_invalid_categories)
     assert source3.validate_config() is False
 
+    config_unlimited_max_papers = {"categories": ["cs"], "max_papers": -1}
+    source4 = ArxivSource(config_unlimited_max_papers)
+    assert source4.validate_config() is True
+
     config_zero_max_papers = {"categories": ["cs"], "max_papers": 0}
-    source4 = ArxivSource(config_zero_max_papers)
-    assert source4.validate_config() is False
+    source5 = ArxivSource(config_zero_max_papers)
+    assert source5.validate_config() is False
+
+    config_negative_max_papers = {"categories": ["cs"], "max_papers": -2}
+    source6 = ArxivSource(config_negative_max_papers)
+    assert source6.validate_config() is False
 
     config_invalid_lookback = {"categories": ["cs"], "lookback_days": 0}
-    source5 = ArxivSource(config_invalid_lookback)
-    assert source5.validate_config() is False
+    source7 = ArxivSource(config_invalid_lookback)
+    assert source7.validate_config() is False
 
 
 def test_get_source_name():
@@ -329,13 +441,21 @@ def test_fetch_papers_for_interval_uses_gmt_bounds_and_closed_filtering():
         ),
     ]
 
-    with patch.object(source, "_fetch_arxiv_feed_page", return_value="<feed />") as mock_fetch:
+    with patch.object(
+        source, "_fetch_arxiv_feed_page", return_value="<feed />"
+    ) as mock_fetch:
         with patch.object(source, "_parse_atom_feed", return_value=papers):
             retained = source.fetch_papers_for_interval(interval)
 
     assert [paper.arxiv_id for paper in retained] == ["1", "2", "3"]
-    assert mock_fetch.call_args.kwargs["window_start"].strftime("%Y%m%d%H%M") == "202603100030"
-    assert mock_fetch.call_args.kwargs["window_end"].strftime("%Y%m%d%H%M") == "202603100200"
+    assert (
+        mock_fetch.call_args.kwargs["window_start"].strftime("%Y%m%d%H%M")
+        == "202603100030"
+    )
+    assert (
+        mock_fetch.call_args.kwargs["window_end"].strftime("%Y%m%d%H%M")
+        == "202603100200"
+    )
 
 
 def test_fetch_papers_for_interval_pages_results():
@@ -379,14 +499,24 @@ def test_fetch_papers_for_interval_pages_results():
         ),
     ]
 
-    with patch.object(source, "_fetch_arxiv_feed_page", side_effect=["page-1", "page-2"]) as mock_fetch:
-        with patch.object(source, "_parse_atom_feed", side_effect=[page_one, page_two]):
-            retained = source.fetch_papers_for_interval(interval)
+    with patch.object(source, "_sleep_between_page_requests") as mock_sleep:
+        with patch.object(
+            source,
+            "_fetch_arxiv_feed_page",
+            side_effect=["page-1", "page-2"],
+        ) as mock_fetch:
+            with patch.object(
+                source,
+                "_parse_atom_feed",
+                side_effect=[page_one, page_two],
+            ):
+                retained = source.fetch_papers_for_interval(interval)
 
     assert len(retained) == 101
     assert mock_fetch.call_count == 2
     assert mock_fetch.call_args_list[0].kwargs["start"] == 0
     assert mock_fetch.call_args_list[1].kwargs["start"] == ARXIV_PAGE_SIZE
+    mock_sleep.assert_called_once_with()
 
 
 def test_fetch_papers_for_interval_deduplicates_across_categories():

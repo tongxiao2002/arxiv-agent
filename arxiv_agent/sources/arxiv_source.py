@@ -2,6 +2,7 @@
 
 import logging
 import re
+import time
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
@@ -18,6 +19,7 @@ logger = logging.getLogger(__name__)
 ARXIV_API_URL = "http://export.arxiv.org/api/query"
 ARXIV_NAMESPACE = "{http://www.w3.org/2005/Atom}"
 ARXIV_PAGE_SIZE = 100
+ARXIV_REQUEST_PACING_SECONDS = 3
 
 
 class ArxivSource(BaseSource):
@@ -39,7 +41,7 @@ class ArxivSource(BaseSource):
         self.categories = self._normalize_categories(
             config.get("categories", ["cs.LG", "cs.CV"])
         )
-        self.max_papers = config.get("max_papers", 100)
+        self.max_papers = config.get("max_papers", -1)
         self.lookback_days = config.get("lookback_days", 1)
         self.runtime_options = runtime_options or RuntimeOptions()
 
@@ -96,6 +98,84 @@ class ArxivSource(BaseSource):
             window_start=window_start,
             window_end=window_end,
         )
+
+    def _resolve_per_category_limit(self, max_papers: Optional[int]) -> Optional[int]:
+        """Return a per-category cap, using None to represent unlimited paging."""
+        limit = self.max_papers if max_papers is None else max_papers
+        return None if limit == -1 else limit
+
+    def _sleep_between_page_requests(self) -> None:
+        """Pause between sequential arXiv page requests per API guidance."""
+        logger.info(
+            "Sleeping %s seconds before the next arXiv page request",
+            ARXIV_REQUEST_PACING_SECONDS,
+        )
+        time.sleep(ARXIV_REQUEST_PACING_SECONDS)
+
+    def _fetch_category_papers(
+        self,
+        category: str,
+        *,
+        window_start: datetime,
+        window_end: datetime,
+        max_papers: Optional[int],
+    ) -> List[Paper]:
+        """Fetch and page all papers for one category inside an explicit query window."""
+        category_papers: List[Paper] = []
+        page_start = 0
+        per_category_limit = self._resolve_per_category_limit(max_papers)
+
+        while True:
+            remaining = None
+            if per_category_limit is not None:
+                remaining = per_category_limit - len(category_papers)
+                if remaining <= 0:
+                    break
+
+            page_size = (
+                min(ARXIV_PAGE_SIZE, remaining)
+                if remaining is not None
+                else ARXIV_PAGE_SIZE
+            )
+
+            if page_start > 0:
+                self._sleep_between_page_requests()
+
+            feed_xml = self._fetch_arxiv_feed_page(
+                category,
+                start=page_start,
+                max_results=page_size,
+                window_start=window_start,
+                window_end=window_end,
+            )
+            page_papers = self._parse_atom_feed(feed_xml)
+            if not page_papers:
+                break
+
+            category_papers.extend(page_papers)
+            if len(page_papers) < page_size:
+                break
+
+            page_start += page_size
+
+        logger.info(
+            "Fetched %s papers for category '%s' before final deduplication",
+            len(category_papers),
+            category,
+        )
+        return category_papers
+
+    def _deduplicate_papers(self, papers: List[Paper]) -> List[Paper]:
+        """Remove duplicates across categories and pages using a stable identity."""
+        unique_papers: List[Paper] = []
+        seen_ids = set()
+        for paper in papers:
+            identity = paper.arxiv_id or paper.paper_id or paper.title
+            if identity in seen_ids:
+                continue
+            seen_ids.add(identity)
+            unique_papers.append(paper)
+        return unique_papers
 
     def _fetch_arxiv_feed_page(
         self,
@@ -278,36 +358,26 @@ class ArxivSource(BaseSource):
         Returns:
             List of Paper objects
         """
-        if max_papers is None:
-            max_papers = self.max_papers
-
-        all_papers = []
-        papers_per_category = max_papers
+        effective_max_papers = self.max_papers if max_papers is None else max_papers
+        window_start, window_end = self._get_submission_window(today)
+        all_papers: List[Paper] = []
 
         for category in self.categories:
             try:
                 logger.info(f"Fetching arXiv papers for category '{category}'")
-                feed_xml = self._fetch_arxiv_feed(
+                papers = self._fetch_category_papers(
                     category,
-                    papers_per_category,
-                    today=today,
+                    window_start=window_start,
+                    window_end=window_end,
+                    max_papers=effective_max_papers,
                 )
-                papers = self._parse_atom_feed(feed_xml)
                 all_papers.extend(papers)
-                logger.info(f"Found {len(papers)} papers in category '{category}'")
 
             except Exception as e:
                 logger.error(f"Failed to fetch papers for category '{category}': {e}")
                 continue
 
-        # deduplication
-        arxiv_ids = set()
-        papers = []
-        for item in all_papers:
-            identity = item.arxiv_id or item.paper_id or item.title
-            if identity not in arxiv_ids:
-                arxiv_ids.add(identity)
-                papers.append(item)
+        papers = self._deduplicate_papers(all_papers)
 
         logger.info(f"Total arXiv papers fetched: {len(papers)}")
         return papers
@@ -334,48 +404,18 @@ class ArxivSource(BaseSource):
             gmt_end,
         )
 
+        effective_max_papers = self.max_papers if max_papers is None else max_papers
         all_papers: List[Paper] = []
-        per_category_limit = max_papers
 
         for category in self.categories:
             try:
-                category_papers: List[Paper] = []
-                page_start = 0
-
-                while True:
-                    remaining = None
-                    if per_category_limit is not None:
-                        remaining = per_category_limit - len(category_papers)
-                        if remaining <= 0:
-                            break
-
-                    page_size = (
-                        min(ARXIV_PAGE_SIZE, remaining)
-                        if remaining is not None
-                        else ARXIV_PAGE_SIZE
-                    )
-                    feed_xml = self._fetch_arxiv_feed_page(
-                        category,
-                        start=page_start,
-                        max_results=page_size,
-                        window_start=interval.query_start_utc,
-                        window_end=interval.query_end_utc,
-                    )
-                    page_papers = self._parse_atom_feed(feed_xml)
-                    if not page_papers:
-                        break
-
-                    category_papers.extend(page_papers)
-                    if len(page_papers) < page_size:
-                        break
-                    page_start += page_size
-
-                all_papers.extend(category_papers)
-                logger.info(
-                    "Fetched %s papers for category '%s' before interval filtering",
-                    len(category_papers),
+                category_papers = self._fetch_category_papers(
                     category,
+                    window_start=interval.query_start_utc,
+                    window_end=interval.query_end_utc,
+                    max_papers=effective_max_papers,
                 )
+                all_papers.extend(category_papers)
             except Exception as exc:
                 logger.error(
                     "Failed to fetch interval papers for category '%s': %s",
@@ -384,17 +424,12 @@ class ArxivSource(BaseSource):
                 )
                 continue
 
-        unique_papers = []
-        seen_ids = set()
-        for paper in all_papers:
-            identity = paper.arxiv_id or paper.paper_id or paper.title
-            if identity in seen_ids:
-                continue
-            seen_ids.add(identity)
-            unique_papers.append(paper)
+        unique_papers = self._deduplicate_papers(all_papers)
 
         retained_papers = [
-            paper for paper in unique_papers if interval.contains(paper.publication_date)
+            paper
+            for paper in unique_papers
+            if interval.contains(paper.publication_date)
         ]
         logger.info(
             "Interval fetch retained %s/%s papers after strict local filtering",
@@ -417,8 +452,12 @@ class ArxivSource(BaseSource):
             logger.error("At least one arXiv category must be specified")
             return False
 
-        if self.max_papers <= 0:
-            logger.error("max_papers must be positive")
+        if not isinstance(self.max_papers, int):
+            logger.error("max_papers must be an integer")
+            return False
+
+        if self.max_papers == 0 or self.max_papers < -1:
+            logger.error("max_papers must be -1 or a positive integer")
             return False
 
         if not isinstance(self.lookback_days, int) or self.lookback_days <= 0:

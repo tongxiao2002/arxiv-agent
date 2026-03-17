@@ -14,6 +14,7 @@ def test_config_defaults():
     assert config.agent.name == "arxiv-agent"
     assert config.agent.timezone == "Asia/Shanghai"
     assert config.sources.primary == "arxiv"
+    assert config.sources.arxiv.max_papers == -1
     assert "machine learning" in config.topics
     assert config.schedule.scan_time == "00:00"
     assert config.llm.provider == "openai"
@@ -119,6 +120,29 @@ def test_config_validation_invalid_primary_source():
     config = Config()
     config.sources.primary = "invalid_source"
     assert config.validate() is False
+
+
+def test_config_validation_accepts_unlimited_arxiv_max_papers():
+    """Test validation accepts -1 as the arXiv unlimited sentinel."""
+    config = Config()
+    config.sources.arxiv.max_papers = -1
+    assert config.validate() is True
+
+
+def test_config_validation_rejects_zero_arxiv_max_papers():
+    """Test validation rejects zero for arXiv max_papers."""
+    config = Config()
+    config.sources.arxiv.max_papers = 0
+    errors = config.get_validation_errors()
+    assert any("sources.arxiv.max_papers" in error for error in errors)
+
+
+def test_config_validation_rejects_negative_arxiv_max_papers_below_sentinel():
+    """Test validation rejects arXiv max_papers values below -1."""
+    config = Config()
+    config.sources.arxiv.max_papers = -2
+    errors = config.get_validation_errors()
+    assert any("sources.arxiv.max_papers" in error for error in errors)
 
 
 def test_config_validation_invalid_email_address():

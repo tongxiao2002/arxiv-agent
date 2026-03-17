@@ -16,6 +16,8 @@
 - The interval is closed, so papers exactly at the start or end timestamp are kept.
 - The maximum supported interval length is 31 days.
 - arXiv queries are widened to GMT minute bounds, then strict app-side filtering preserves the exact requested local interval.
+- arXiv requests page in 100-result chunks and wait 3 seconds between sequential page fetches.
+- `sources.arxiv.max_papers` is a per-category cap for both daily runs and interval backfills; `-1` means unlimited.
 
 ## Logs
 
@@ -26,6 +28,7 @@
 ## Storage and Retention
 
 - Daily paper data is written to `storage.data_dir` as JSON.
+- Daily arXiv reruns merge into the existing day file, keeping previously stored records when the same paper identity appears again.
 - Interval `run-once` still writes only daily files; it merges matching paper IDs into existing files instead of creating a separate interval artifact.
 - Partial-day interval runs preserve unrelated papers already stored for the same day.
 - Old daily files are archived into `storage.archive_dir`.

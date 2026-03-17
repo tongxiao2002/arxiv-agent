@@ -30,7 +30,8 @@ Typical fixes:
 - Check the root-cause message logged after the retry wrapper fails.
 - Verify the selected `llm.model` exists in your provider account.
 - Increase `advanced.request_timeout` if the provider is slow.
-- Reduce `sources.arxiv.max_papers` while testing to shorten runs.
+- Reduce `sources.arxiv.max_papers` to a small positive value while testing to shorten runs.
+- Remember that `sources.arxiv.max_papers: -1` means unlimited per-category paging in 100-paper requests.
 
 ## SMTP delivery fails
 
@@ -43,6 +44,7 @@ Typical fixes:
 
 - Run `python -m arxiv_agent.cli run-once --dry-run --config config.yaml` first.
 - Check that the scrape step stored a file under `storage.data_dir`.
+- Re-running arXiv scraping for the same day preserves existing stored papers and appends only new identities.
 - If a date was already processed, classification now skips papers already stored as enhanced records.
 - If no relevant papers are found, Arxiv-Agent sends the "no papers" email variant instead of a digest.
 - If you passed `--no-email`, skipping delivery is intentional and the run result reports that explicitly.
