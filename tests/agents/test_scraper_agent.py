@@ -1,14 +1,16 @@
 """Tests for scraper agent."""
 
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from unittest.mock import Mock, patch
 
 import pytest
 
 from arxiv_agent.agents.scraper_agent import ScraperAgent
 from arxiv_agent.sources.arxiv_source import ArxivSource
+from arxiv_agent.sources.base_source import Paper
 from arxiv_agent.sources.papers_cool_source import PapersCoolSource
 from arxiv_agent.storage.json_storage import JsonStorage
+from arxiv_agent.utils.intervals import RunOnceInterval
 from arxiv_agent.utils.retry import RetryError
 
 
@@ -298,6 +300,58 @@ def test_scraper_agent_run_source_not_initialized(mock_fetch, mock_now):
     agent.source = None
     with pytest.raises(RetryError, match="Function run failed after 3 attempts"):
         agent.run()
+
+
+@patch.object(JsonStorage, "merge_papers")
+@patch.object(ArxivSource, "fetch_papers_for_interval")
+def test_scraper_agent_run_interval_groups_and_merges(mock_fetch, mock_merge):
+    """Test interval runs split papers by local day and merge into daily files."""
+    mock_fetch.return_value = [
+        Paper(
+            title="Day One",
+            abstract="",
+            authors=["Author"],
+            arxiv_id="2603.00001",
+            paper_id="2603.00001",
+            publication_date=datetime(2026, 3, 10, 1, 0, tzinfo=timezone.utc),
+            source="arxiv",
+        ),
+        Paper(
+            title="Day Two",
+            abstract="",
+            authors=["Author"],
+            arxiv_id="2603.00002",
+            paper_id="2603.00002",
+            publication_date=datetime(2026, 3, 10, 17, 30, tzinfo=timezone.utc),
+            source="arxiv",
+        ),
+    ]
+    mock_merge.return_value = True
+
+    config = {
+        "agent": {"timezone": "Asia/Shanghai"},
+        "sources": {
+            "primary": "arxiv",
+            "arxiv": {"categories": ["cs"], "max_papers": 50},
+        },
+        "storage": {"data_dir": "./papers"},
+    }
+    interval = RunOnceInterval.from_local_naive(
+        datetime(2026, 3, 10, 8, 30),
+        datetime(2026, 3, 11, 9, 0),
+        "Asia/Shanghai",
+    )
+
+    agent = ScraperAgent(config)
+    result = agent.run(run_interval=interval)
+
+    assert result["success"] is True
+    assert result["affected_days"] == ["2026-03-10", "2026-03-11"]
+    assert result["stored_by_day"] == {"2026-03-10": 1, "2026-03-11": 1}
+    mock_fetch.assert_called_once_with(interval, max_papers=None)
+    assert mock_merge.call_count == 2
+    assert mock_merge.call_args_list[0].args[0] == date(2026, 3, 10)
+    assert mock_merge.call_args_list[1].args[0] == date(2026, 3, 11)
 
 
 def test_scraper_agent_get_stored_papers():

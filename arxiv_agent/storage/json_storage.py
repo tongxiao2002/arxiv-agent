@@ -125,6 +125,17 @@ class JsonStorage:
                     pass
             return False
 
+    def merge_papers(self, target_date: date, papers: List[Paper]) -> bool:
+        """
+        Merge papers into an existing daily file without dropping unrelated entries.
+
+        Incoming enhanced papers replace raw records for the same identifier, while
+        existing enhanced papers are preserved if a later merge only provides raw data.
+        """
+        existing_papers = self.load_papers(target_date)
+        merged_papers = self._merge_paper_lists(existing_papers, papers)
+        return self.save_papers(target_date, merged_papers)
+
     def load_papers(self, target_date: date) -> List[Paper]:
         """
         Load papers from JSON file for a given date.
@@ -142,7 +153,7 @@ class JsonStorage:
             return []
 
         try:
-            with open(file_path, "r") as f:
+            with open(file_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
 
             # Convert dicts back to Paper objects
@@ -251,3 +262,40 @@ class JsonStorage:
             total += len(papers)
 
         return total
+
+    def _merge_paper_lists(
+        self,
+        existing_papers: List[Paper],
+        incoming_papers: List[Paper],
+    ) -> List[Paper]:
+        """Merge paper lists by stable identifier while preserving daily file shape."""
+        merged: dict[str, Paper] = {}
+
+        for paper in existing_papers:
+            merged[self._paper_identity(paper)] = paper
+
+        for paper in incoming_papers:
+            identity = self._paper_identity(paper)
+            existing = merged.get(identity)
+            if existing is None:
+                merged[identity] = paper
+                continue
+            merged[identity] = self._select_preferred_paper(existing, paper)
+
+        return list(merged.values())
+
+    def _paper_identity(self, paper: Paper) -> str:
+        """Build a stable identifier for merge/upsert behavior."""
+        return (
+            paper.arxiv_id
+            or paper.paper_id
+            or paper.webpage_url
+            or paper.pdf_url
+            or paper.title
+        )
+
+    def _select_preferred_paper(self, existing: Paper, incoming: Paper) -> Paper:
+        """Prefer the newer enhanced record without allowing raw downgrades."""
+        if isinstance(existing, EnhancedPaper) and not isinstance(incoming, EnhancedPaper):
+            return existing
+        return incoming

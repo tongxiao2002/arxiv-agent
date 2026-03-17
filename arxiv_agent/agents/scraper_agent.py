@@ -10,6 +10,7 @@ from arxiv_agent.sources.arxiv_source import ArxivSource
 from arxiv_agent.sources.base_source import Paper
 from arxiv_agent.sources.papers_cool_source import PapersCoolSource
 from arxiv_agent.storage.json_storage import JsonStorage
+from arxiv_agent.utils.intervals import RunOnceInterval
 from arxiv_agent.utils.retry import retry
 from arxiv_agent.utils.runtime import RuntimeOptions
 from arxiv_agent.utils.timezone import get_current_date_in_timezone
@@ -78,7 +79,11 @@ class ScraperAgent(BaseAgent):
         if not self.source:
             raise ValueError("Source not initialized")
 
-        target_date = self._parse_target_date(*args, **kwargs)
+        run_interval = kwargs.get("run_interval")
+        if run_interval is not None and not isinstance(run_interval, RunOnceInterval):
+            raise ValueError("run_interval must be a RunOnceInterval")
+
+        target_date = None if run_interval is not None else self._parse_target_date(*args, **kwargs)
 
         # Validate source configuration
         if not self.source.validate_config():
@@ -93,25 +98,59 @@ class ScraperAgent(BaseAgent):
 
         # Fetch papers
         logger.info("Fetching papers from %s", self.source.source_name)
-        if self.source.source_name == "arxiv":
-            fetch_today = datetime.combine(target_date, time.min)
-            papers = self.source.fetch_papers(
-                max_papers=max_papers,
-                today=fetch_today,
+        if run_interval is not None:
+            if self.source.source_name != "arxiv":
+                raise ValueError("Interval run-once is only supported for the arXiv source")
+            papers = self.source.fetch_papers_for_interval(
+                run_interval,
+                max_papers=None,
             )
+        elif self.source.source_name == "arxiv":
+            assert target_date is not None
+            fetch_today = datetime.combine(target_date + timedelta(days=1), time.min)
+            papers = self.source.fetch_papers(max_papers=max_papers, today=fetch_today)
         else:
             papers = self.source.fetch_papers(max_papers=max_papers)
 
         if not papers:
             logger.warning("No papers fetched from %s", self.source.source_name)
-            return {
+            result = {
                 "success": True,
                 "papers_fetched": 0,
                 "message": "No papers fetched",
-                "target_date": target_date.isoformat(),
             }
+            if target_date is not None:
+                result["target_date"] = target_date.isoformat()
+            if run_interval is not None:
+                result["interval"] = run_interval.to_dict()
+                result["affected_days"] = []
+                result["stored_by_day"] = {}
+            return result
 
         # Store papers
+        if run_interval is not None:
+            stored_by_day = self._store_interval_papers(run_interval, papers)
+            if stored_by_day is None:
+                raise RuntimeError("Failed to merge interval papers into storage")
+
+            logger.info(
+                "Successfully fetched and stored %s interval papers across %s day(s)",
+                len(papers),
+                len(stored_by_day),
+            )
+            return {
+                "success": True,
+                "papers_fetched": len(papers),
+                "source": self.source.source_name,
+                "interval": run_interval.to_dict(),
+                "affected_days": sorted(stored_by_day.keys()),
+                "stored_by_day": stored_by_day,
+                "categories": (
+                    self.source.categories if hasattr(self.source, "categories") else []
+                ),
+            }
+
+        assert target_date is not None
         success = self.storage.save_papers(target_date, papers)
 
         if not success:
@@ -227,3 +266,29 @@ class ScraperAgent(BaseAgent):
         if not self.storage:
             raise ValueError("Storage not initialized")
         return self.storage.list_dates()
+
+    def _store_interval_papers(
+        self,
+        run_interval: RunOnceInterval,
+        papers: List[Paper],
+    ) -> Dict[str, int] | None:
+        """Group interval papers by local day and merge them into daily storage."""
+        grouped: Dict[str, List[Paper]] = {}
+        for paper in papers:
+            if paper.publication_date is None:
+                logger.warning(
+                    "Skipping paper without publication date during interval storage: %s",
+                    paper.title,
+                )
+                continue
+            local_day = run_interval.local_date_for(paper.publication_date).isoformat()
+            grouped.setdefault(local_day, []).append(paper)
+
+        stored_by_day: Dict[str, int] = {}
+        for date_text, day_papers in grouped.items():
+            storage_date = date.fromisoformat(date_text)
+            if not self.storage.merge_papers(storage_date, day_papers):
+                return None
+            stored_by_day[date_text] = len(day_papers)
+
+        return stored_by_day

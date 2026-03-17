@@ -1,12 +1,21 @@
 """Tests for CLI interface."""
 
 import sys
+from argparse import Namespace
+from datetime import date, datetime
 from unittest.mock import Mock, patch
 
 import pytest
 
-from arxiv_agent.cli import main, run_once_command, start_command, version_command
+from arxiv_agent.cli import (
+    _parse_run_once_interval,
+    main,
+    run_once_command,
+    start_command,
+    version_command,
+)
 from arxiv_agent.config import Config
+from arxiv_agent.utils.intervals import RunOnceInterval
 
 
 def make_config() -> Config:
@@ -104,6 +113,81 @@ def test_run_once_command_dry_run(capsys):
     assert kwargs["dry_run"] is True
     captured = capsys.readouterr()
     assert "Run-once dry-run completed" in captured.out
+
+
+def test_run_once_command_no_email_skips_email_workflow():
+    """Test run-once can skip email entirely while still scanning."""
+    config = make_config()
+
+    with patch("arxiv_agent.cli._run_scan_workflow", return_value={"success": True}):
+        with patch("arxiv_agent.cli._run_email_workflow") as mock_email:
+            result = run_once_command(config, dry_run=False, no_email=True)
+
+    assert result["success"] is True
+    assert result["email_skipped"] is True
+    mock_email.assert_not_called()
+
+
+def test_run_once_command_interval_mode_runs_interval_workflows(capsys):
+    """Test interval mode uses per-interval scan and email orchestration."""
+    config = make_config()
+    interval = RunOnceInterval.from_local_naive(
+        datetime(2026, 3, 10, 8, 30),
+        datetime(2026, 3, 11, 9, 0),
+        "Asia/Shanghai",
+    )
+
+    with patch(
+        "arxiv_agent.cli._run_interval_scan_workflow",
+        return_value={"success": True, "affected_days": ["2026-03-10", "2026-03-11"]},
+    ) as mock_scan:
+        with patch(
+            "arxiv_agent.cli._run_interval_email_workflow",
+            return_value={"success": True, "skipped": False, "by_day": {}},
+        ) as mock_email:
+            result = run_once_command(
+                config,
+                dry_run=False,
+                run_interval=interval,
+                no_email=False,
+            )
+
+    assert result["success"] is True
+    assert result["mode"] == "interval"
+    mock_scan.assert_called_once_with(config, interval)
+    mock_email.assert_called_once()
+    captured = capsys.readouterr()
+    assert "completed for interval" in captured.out
+
+
+def test_parse_run_once_interval_requires_both_values():
+    """Test interval mode rejects partial datetime input."""
+    config = make_config()
+    args = Namespace(from_datetime="2026-03-10T08:30", to_datetime=None)
+
+    with pytest.raises(ValueError, match="both --from and --to together"):
+        _parse_run_once_interval(config, args)
+
+
+def test_parse_run_once_interval_rejects_invalid_datetime():
+    """Test interval mode rejects invalid ISO local datetimes."""
+    config = make_config()
+    args = Namespace(from_datetime="2026/03/10 08:30", to_datetime="2026-03-10T09:30")
+
+    with pytest.raises(ValueError, match="valid ISO local datetime"):
+        _parse_run_once_interval(config, args)
+
+
+def test_parse_run_once_interval_rejects_long_intervals():
+    """Test interval mode enforces the 31-day cap."""
+    config = make_config()
+    args = Namespace(
+        from_datetime="2026-03-01T00:00",
+        to_datetime="2026-04-02T00:01",
+    )
+
+    with pytest.raises(ValueError, match="cannot exceed 31 days"):
+        _parse_run_once_interval(config, args)
 
 
 @patch("arxiv_agent.cli.setup_logging")
@@ -208,8 +292,7 @@ def test_main_run_once(mock_config_class, mock_setup_logging, mock_run_once_comm
     mock_config.advanced.request_timeout = 30
     mock_config_class.from_yaml.return_value = mock_config
 
-    sys.argv = ["arxiv-agent", "run-once", "--dry-run"]
-    exit_code = main()
+    exit_code = main(["run-once", "--dry-run"])
 
     assert exit_code == 0
     mock_setup_logging.assert_called_once_with(
@@ -220,7 +303,59 @@ def test_main_run_once(mock_config_class, mock_setup_logging, mock_run_once_comm
         require_llm=True,
         require_email=False,
     )
-    mock_run_once_command.assert_called_once_with(mock_config, dry_run=True)
+    mock_run_once_command.assert_called_once_with(
+        mock_config,
+        dry_run=True,
+        run_interval=None,
+        no_email=False,
+    )
+
+
+@patch("arxiv_agent.cli.run_once_command")
+@patch("arxiv_agent.cli.setup_logging")
+@patch("arxiv_agent.cli.Config")
+def test_main_run_once_interval_no_email(
+    mock_config_class,
+    mock_setup_logging,
+    mock_run_once_command,
+):
+    """Test main parses interval run-once flags and disables email requirements."""
+    mock_config = Mock()
+    mock_config.validate.return_value = True
+    mock_config.validate_runtime_requirements.return_value = True
+    mock_config.storage.log_dir = "./logs"
+    mock_config.advanced.log_level = "INFO"
+    mock_config.agent.timezone = "Asia/Shanghai"
+    mock_config.sources.primary = "arxiv"
+    mock_config.llm.provider = "openai"
+    mock_config.llm.model = "gpt-4o-mini"
+    mock_config.storage.data_dir = "./papers"
+    mock_config.storage.archive_dir = "./archive"
+    mock_config.schedule.scan_time = "00:00"
+    mock_config.schedule.email_time = "09:00"
+    mock_config.advanced.max_retries = 5
+    mock_config.advanced.request_timeout = 30
+    mock_config_class.from_yaml.return_value = mock_config
+
+    exit_code = main(
+        [
+            "run-once",
+            "--from",
+            "2026-03-10T08:30",
+            "--to",
+            "2026-03-11T09:00",
+            "--no-email",
+        ]
+    )
+
+    assert exit_code == 0
+    mock_config.validate_runtime_requirements.assert_called_once_with(
+        require_llm=True,
+        require_email=False,
+    )
+    _, kwargs = mock_run_once_command.call_args
+    assert kwargs["no_email"] is True
+    assert isinstance(kwargs["run_interval"], RunOnceInterval)
 
 
 @patch("arxiv_agent.cli.setup_logging")
@@ -258,8 +393,15 @@ def test_main_help(capsys):
     with pytest.raises(SystemExit) as exc_info:
         main()
     assert exc_info.value.code == 0
+
+
+def test_main_start_rejects_interval_flags(capsys):
+    """Test start does not accept run-once interval flags."""
+    with pytest.raises(SystemExit) as exc_info:
+        main(["start", "--from", "2026-03-10T08:30", "--to", "2026-03-10T09:00"])
+    assert exc_info.value.code == 2
     captured = capsys.readouterr()
-    assert "usage:" in captured.out
+    assert "usage:" in captured.err
 
 
 def test_main_invalid_command(capsys):

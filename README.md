@@ -114,6 +114,15 @@ python -m arxiv_agent.cli run-once --dry-run --config config.yaml
 
 This still performs scraping and LLM classification, but it does not send a real email.
 
+One-off interval backfill examples:
+
+```bash
+python -m arxiv_agent.cli run-once --from 2026-03-10T08:30 --to 2026-03-10T18:00
+python -m arxiv_agent.cli run-once --from 2026-03-10T08:30 --to 2026-03-12T18:00 --no-email
+```
+
+`--from` and `--to` are naive local datetimes interpreted in `agent.timezone`. Interval mode is supported only on `run-once`, is capped at 31 days, and keeps second-level precision by widening the arXiv query to GMT minute bounds and then strict-filtering locally.
+
 ### 4. Run
 
 ```bash
@@ -122,12 +131,16 @@ python -m arxiv_agent.cli run-once
 python -m arxiv_agent.cli version
 ```
 
+`start` does not accept `--from`, `--to`, or `--no-email`; scheduled mode remains date-based.
+
 ## Runtime Notes
 
 - Logs are written to `storage.log_dir` and honor `advanced.log_level`.
 - `advanced.max_retries`, `advanced.retry_backoff_factor`, and `advanced.request_timeout` now apply to source fetches, LLM calls, and SMTP delivery retries.
 - The app logs an effective runtime summary at startup without printing secrets.
 - Re-running classification for a day skips papers that are already stored as enhanced results.
+- Interval `run-once` writes back into the existing daily JSON files and may augment a day instead of replacing it.
+- When interval mode spans multiple local days, classification and email execution happen per affected day.
 
 ## Configuration Reference
 

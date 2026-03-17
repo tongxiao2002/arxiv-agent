@@ -5,11 +5,11 @@ import re
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
-from urllib.parse import urlencode
 
 import requests
 
 from arxiv_agent.sources.base_source import BaseSource, Paper
+from arxiv_agent.utils.intervals import RunOnceInterval
 from arxiv_agent.utils.runtime import RuntimeOptions, call_with_retry
 
 logger = logging.getLogger(__name__)
@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 # arXiv API constants
 ARXIV_API_URL = "http://export.arxiv.org/api/query"
 ARXIV_NAMESPACE = "{http://www.w3.org/2005/Atom}"
+ARXIV_PAGE_SIZE = 100
 
 
 class ArxivSource(BaseSource):
@@ -35,10 +36,26 @@ class ArxivSource(BaseSource):
             config: arXiv source configuration (categories, max_papers, etc.)
         """
         super().__init__(config, source_name="arxiv")
-        self.categories = config.get("categories", ["cs.LG", "cs.CV"])
-        self.max_papers = config.get("max_papers", 10)
+        self.categories = self._normalize_categories(
+            config.get("categories", ["cs.LG", "cs.CV"])
+        )
+        self.max_papers = config.get("max_papers", 100)
         self.lookback_days = config.get("lookback_days", 1)
         self.runtime_options = runtime_options or RuntimeOptions()
+
+    def _normalize_categories(self, categories: Any) -> Any:
+        """Normalize categories and drop invalid identifiers."""
+        if not isinstance(categories, list):
+            return categories
+
+        normalized = []
+        for category in categories:
+            if not isinstance(category, str):
+                continue
+            value = category.strip()
+            if re.fullmatch(r"[A-Za-z]+(?:\.[A-Za-z\-]+)?", value):
+                normalized.append(value)
+        return normalized
 
     def _get_submission_window(
         self,
@@ -72,6 +89,24 @@ class ArxivSource(BaseSource):
             Atom feed XML as string
         """
         window_start, window_end = self._get_submission_window(today)
+        return self._fetch_arxiv_feed_page(
+            category,
+            start=0,
+            max_results=max_results,
+            window_start=window_start,
+            window_end=window_end,
+        )
+
+    def _fetch_arxiv_feed_page(
+        self,
+        category: str,
+        *,
+        start: int,
+        max_results: int,
+        window_start: datetime,
+        window_end: datetime,
+    ) -> str:
+        """Fetch a single arXiv Atom feed page for an explicit GMT window."""
         params = {
             "search_query": (
                 "cat:"
@@ -80,17 +115,19 @@ class ArxivSource(BaseSource):
             ),
             "sortBy": "submittedDate",
             "sortOrder": "descending",
-            "start": 0,
+            "start": start,
             "max_results": max_results,
         }
 
         params_str = "&".join([f"{key}={val}" for key, val in params.items()])
         url = f"{ARXIV_API_URL}?{params_str}"
         logger.info(
-            "Fetching arXiv feed for category '%s' between %s and %s",
+            "Fetching arXiv feed for category '%s' between %s and %s (start=%s, max_results=%s)",
             category,
             window_start.isoformat(),
             window_end.isoformat(),
+            start,
+            max_results,
         )
 
         def operation() -> str:
@@ -259,11 +296,6 @@ class ArxivSource(BaseSource):
                 all_papers.extend(papers)
                 logger.info(f"Found {len(papers)} papers in category '{category}'")
 
-                # Stop if we've reached the limit
-                # if len(all_papers) >= max_papers:
-                #     all_papers = all_papers[:max_papers]
-                #     break
-
             except Exception as e:
                 logger.error(f"Failed to fetch papers for category '{category}': {e}")
                 continue
@@ -272,12 +304,104 @@ class ArxivSource(BaseSource):
         arxiv_ids = set()
         papers = []
         for item in all_papers:
-            if item.arxiv_id not in arxiv_ids:
-                arxiv_ids.add(item.arxiv_id)
+            identity = item.arxiv_id or item.paper_id or item.title
+            if identity not in arxiv_ids:
+                arxiv_ids.add(identity)
                 papers.append(item)
 
         logger.info(f"Total arXiv papers fetched: {len(papers)}")
         return papers
+
+    def fetch_papers_for_interval(
+        self,
+        interval: RunOnceInterval,
+        *,
+        max_papers: Optional[int] = None,
+    ) -> List[Paper]:
+        """
+        Fetch papers for an explicit local datetime interval.
+
+        The arXiv API query is widened to minute precision in GMT and then strict
+        filtering is applied against the original closed local interval.
+        """
+        gmt_start, gmt_end = interval.gmt_bounds()
+        logger.info(
+            "Fetching arXiv interval: local=[%s, %s] timezone=%s gmt=[%s, %s]",
+            interval.local_start.isoformat(),
+            interval.local_end.isoformat(),
+            interval.timezone_name,
+            gmt_start,
+            gmt_end,
+        )
+
+        all_papers: List[Paper] = []
+        per_category_limit = max_papers
+
+        for category in self.categories:
+            try:
+                category_papers: List[Paper] = []
+                page_start = 0
+
+                while True:
+                    remaining = None
+                    if per_category_limit is not None:
+                        remaining = per_category_limit - len(category_papers)
+                        if remaining <= 0:
+                            break
+
+                    page_size = (
+                        min(ARXIV_PAGE_SIZE, remaining)
+                        if remaining is not None
+                        else ARXIV_PAGE_SIZE
+                    )
+                    feed_xml = self._fetch_arxiv_feed_page(
+                        category,
+                        start=page_start,
+                        max_results=page_size,
+                        window_start=interval.query_start_utc,
+                        window_end=interval.query_end_utc,
+                    )
+                    page_papers = self._parse_atom_feed(feed_xml)
+                    if not page_papers:
+                        break
+
+                    category_papers.extend(page_papers)
+                    if len(page_papers) < page_size:
+                        break
+                    page_start += page_size
+
+                all_papers.extend(category_papers)
+                logger.info(
+                    "Fetched %s papers for category '%s' before interval filtering",
+                    len(category_papers),
+                    category,
+                )
+            except Exception as exc:
+                logger.error(
+                    "Failed to fetch interval papers for category '%s': %s",
+                    category,
+                    exc,
+                )
+                continue
+
+        unique_papers = []
+        seen_ids = set()
+        for paper in all_papers:
+            identity = paper.arxiv_id or paper.paper_id or paper.title
+            if identity in seen_ids:
+                continue
+            seen_ids.add(identity)
+            unique_papers.append(paper)
+
+        retained_papers = [
+            paper for paper in unique_papers if interval.contains(paper.publication_date)
+        ]
+        logger.info(
+            "Interval fetch retained %s/%s papers after strict local filtering",
+            len(retained_papers),
+            len(unique_papers),
+        )
+        return retained_papers
 
     def get_source_name(self) -> str:
         """Get source name."""

@@ -18,6 +18,13 @@ Typical fixes:
 - Make sure `email.subject_template` includes `{date}`.
 - Make sure `advanced.max_retries` and `advanced.request_timeout` are positive values.
 
+## Run-once interval flags fail
+
+- Use both `--from` and `--to` together; partial interval input is rejected.
+- Use naive ISO local datetimes such as `2026-03-10T08:30`. Do not include a timezone offset.
+- Interval mode is only available on `run-once`, not `start`.
+- Intervals longer than 31 days are rejected.
+
 ## LLM calls keep retrying and then fail
 
 - Check the root-cause message logged after the retry wrapper fails.
@@ -38,3 +45,5 @@ Typical fixes:
 - Check that the scrape step stored a file under `storage.data_dir`.
 - If a date was already processed, classification now skips papers already stored as enhanced records.
 - If no relevant papers are found, Arxiv-Agent sends the "no papers" email variant instead of a digest.
+- If you passed `--no-email`, skipping delivery is intentional and the run result reports that explicitly.
+- Interval runs only email affected local days; an empty interval result does not send a digest.

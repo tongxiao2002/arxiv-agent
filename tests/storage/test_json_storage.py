@@ -1,12 +1,13 @@
 """Tests for JSON storage system."""
 
 import json
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 import pytest
 
 from arxiv_agent.sources.base_source import Paper
+from arxiv_agent.sources.enhanced_paper import EnhancedPaper
 from arxiv_agent.storage.json_storage import JsonStorage
 
 
@@ -210,3 +211,63 @@ def test_json_storage_paper_serialization_roundtrip(temp_dir):
     assert loaded_paper.source == original_paper.source
     assert loaded_paper.pdf_url == original_paper.pdf_url
     assert loaded_paper.webpage_url == original_paper.webpage_url
+
+
+def test_json_storage_merge_preserves_unrelated_and_upgrades_enhanced(temp_dir):
+    """Test partial-day merges keep unrelated papers and upgrade raw records."""
+    storage = JsonStorage(data_dir=str(temp_dir))
+    target_date = date(2026, 3, 10)
+
+    existing_raw = Paper(
+        title="Raw Paper",
+        abstract="Abstract",
+        authors=["Author"],
+        arxiv_id="raw-1",
+        paper_id="raw-1",
+        publication_date=datetime(2026, 3, 10, 1, 0, tzinfo=timezone.utc),
+        source="arxiv",
+    )
+    unrelated_existing = EnhancedPaper(
+        title="Other Paper",
+        abstract="Abstract",
+        authors=["Author"],
+        arxiv_id="other-1",
+        paper_id="other-1",
+        publication_date=datetime(2026, 3, 10, 2, 0, tzinfo=timezone.utc),
+        source="arxiv",
+        is_relevant=False,
+        summary="Existing summary",
+    )
+    storage.save_papers(target_date, [existing_raw, unrelated_existing])
+
+    upgraded_raw = EnhancedPaper(
+        title="Raw Paper",
+        abstract="Abstract",
+        authors=["Author"],
+        arxiv_id="raw-1",
+        paper_id="raw-1",
+        publication_date=datetime(2026, 3, 10, 1, 0, tzinfo=timezone.utc),
+        source="arxiv",
+        is_relevant=True,
+        summary="Upgraded summary",
+        matched_topics=["agents"],
+    )
+    new_interval_paper = Paper(
+        title="New Paper",
+        abstract="Abstract",
+        authors=["Author"],
+        arxiv_id="new-1",
+        paper_id="new-1",
+        publication_date=datetime(2026, 3, 10, 3, 0, tzinfo=timezone.utc),
+        source="arxiv",
+    )
+
+    assert storage.merge_papers(target_date, [upgraded_raw, new_interval_paper]) is True
+
+    loaded = storage.load_papers(target_date)
+    by_id = {paper.arxiv_id: paper for paper in loaded}
+
+    assert set(by_id) == {"raw-1", "other-1", "new-1"}
+    assert isinstance(by_id["raw-1"], EnhancedPaper)
+    assert by_id["raw-1"].summary == "Upgraded summary"
+    assert isinstance(by_id["other-1"], EnhancedPaper)

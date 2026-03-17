@@ -1,12 +1,14 @@
 """Tests for arXiv source implementation."""
 
-from datetime import datetime
+from datetime import datetime, timezone
 from urllib.parse import parse_qs, urlparse
 from unittest.mock import Mock, patch
 
 import pytest
 
-from arxiv_agent.sources.arxiv_source import ArxivSource
+from arxiv_agent.sources.arxiv_source import ARXIV_PAGE_SIZE, ArxivSource
+from arxiv_agent.sources.base_source import Paper
+from arxiv_agent.utils.intervals import RunOnceInterval
 from arxiv_agent.utils.runtime import RuntimeOptions
 
 SAMPLE_ATOM_FEED = """<?xml version="1.0" encoding="UTF-8"?>
@@ -90,7 +92,7 @@ def test_fetch_arxiv_feed(mock_get):
     call_url = mock_get.call_args[0][0]
     query = parse_qs(urlparse(call_url).query)
     assert query["search_query"] == [
-        "cat:cs+AND+submittedDate:[202603140000+TO+202603150000]"
+        "cat:cs AND submittedDate:[202603140000 TO 202603150000]"
     ]
     assert query["max_results"] == ["10"]
     assert mock_get.call_args.kwargs["timeout"] == 30
@@ -153,7 +155,7 @@ def test_fetch_arxiv_feed_custom_lookback_window(mock_get):
     call_url = mock_get.call_args[0][0]
     query = parse_qs(urlparse(call_url).query)
     assert query["search_query"] == [
-        "cat:cs+AND+submittedDate:[202603080000+TO+202603150000]"
+        "cat:cs AND submittedDate:[202603080000 TO 202603150000]"
     ]
 
 
@@ -215,8 +217,8 @@ def test_fetch_papers(mock_get):
     source = ArxivSource(config)
     papers = source.fetch_papers(max_papers=5)
 
-    # Should fetch from both categories but limit total
-    assert len(papers) == 4  # 2 papers per category (cs, physics)
+    # Results are deduplicated by arXiv ID across categories.
+    assert len(papers) == 2
     assert mock_get.call_count == 2  # Called for each category
 
 
@@ -269,3 +271,161 @@ def test_get_source_name():
     config = {"categories": ["cs"]}
     source = ArxivSource(config)
     assert source.get_source_name() == "arxiv"
+
+
+def test_fetch_papers_for_interval_uses_gmt_bounds_and_closed_filtering():
+    """Test interval fetch widens query bounds and then strict-filters locally."""
+    source = ArxivSource({"categories": ["cs"]})
+    interval = RunOnceInterval.from_local_naive(
+        datetime(2026, 3, 10, 8, 30, 15),
+        datetime(2026, 3, 10, 10, 0, 0),
+        "Asia/Shanghai",
+    )
+    papers = [
+        Paper(
+            title="start",
+            abstract="",
+            authors=[],
+            arxiv_id="1",
+            paper_id="1",
+            publication_date=datetime(2026, 3, 10, 0, 30, 15, tzinfo=timezone.utc),
+            source="arxiv",
+        ),
+        Paper(
+            title="inside",
+            abstract="",
+            authors=[],
+            arxiv_id="2",
+            paper_id="2",
+            publication_date=datetime(2026, 3, 10, 1, 0, 0, tzinfo=timezone.utc),
+            source="arxiv",
+        ),
+        Paper(
+            title="end",
+            abstract="",
+            authors=[],
+            arxiv_id="3",
+            paper_id="3",
+            publication_date=datetime(2026, 3, 10, 2, 0, 0, tzinfo=timezone.utc),
+            source="arxiv",
+        ),
+        Paper(
+            title="before",
+            abstract="",
+            authors=[],
+            arxiv_id="4",
+            paper_id="4",
+            publication_date=datetime(2026, 3, 10, 0, 30, 14, tzinfo=timezone.utc),
+            source="arxiv",
+        ),
+        Paper(
+            title="after",
+            abstract="",
+            authors=[],
+            arxiv_id="5",
+            paper_id="5",
+            publication_date=datetime(2026, 3, 10, 2, 0, 1, tzinfo=timezone.utc),
+            source="arxiv",
+        ),
+    ]
+
+    with patch.object(source, "_fetch_arxiv_feed_page", return_value="<feed />") as mock_fetch:
+        with patch.object(source, "_parse_atom_feed", return_value=papers):
+            retained = source.fetch_papers_for_interval(interval)
+
+    assert [paper.arxiv_id for paper in retained] == ["1", "2", "3"]
+    assert mock_fetch.call_args.kwargs["window_start"].strftime("%Y%m%d%H%M") == "202603100030"
+    assert mock_fetch.call_args.kwargs["window_end"].strftime("%Y%m%d%H%M") == "202603100200"
+
+
+def test_fetch_papers_for_interval_pages_results():
+    """Test interval fetch keeps paging until a short page is returned."""
+    source = ArxivSource({"categories": ["cs"]})
+    interval = RunOnceInterval.from_local_naive(
+        datetime(2026, 3, 10, 8, 30),
+        datetime(2026, 3, 10, 12, 0),
+        "Asia/Shanghai",
+    )
+    page_one = [
+        Paper(
+            title=f"paper-{index}",
+            abstract="",
+            authors=[],
+            arxiv_id=f"id-{index}",
+            paper_id=f"id-{index}",
+            publication_date=datetime(2026, 3, 10, 1, 0, tzinfo=timezone.utc),
+            source="arxiv",
+        )
+        for index in range(ARXIV_PAGE_SIZE)
+    ]
+    page_two = [
+        Paper(
+            title="duplicate",
+            abstract="",
+            authors=[],
+            arxiv_id="id-0",
+            paper_id="id-0",
+            publication_date=datetime(2026, 3, 10, 1, 10, tzinfo=timezone.utc),
+            source="arxiv",
+        ),
+        Paper(
+            title="new-paper",
+            abstract="",
+            authors=[],
+            arxiv_id="id-100",
+            paper_id="id-100",
+            publication_date=datetime(2026, 3, 10, 1, 20, tzinfo=timezone.utc),
+            source="arxiv",
+        ),
+    ]
+
+    with patch.object(source, "_fetch_arxiv_feed_page", side_effect=["page-1", "page-2"]) as mock_fetch:
+        with patch.object(source, "_parse_atom_feed", side_effect=[page_one, page_two]):
+            retained = source.fetch_papers_for_interval(interval)
+
+    assert len(retained) == 101
+    assert mock_fetch.call_count == 2
+    assert mock_fetch.call_args_list[0].kwargs["start"] == 0
+    assert mock_fetch.call_args_list[1].kwargs["start"] == ARXIV_PAGE_SIZE
+
+
+def test_fetch_papers_for_interval_deduplicates_across_categories():
+    """Test interval fetch deduplicates the same paper returned in multiple categories."""
+    source = ArxivSource({"categories": ["cs", "stat"]})
+    interval = RunOnceInterval.from_local_naive(
+        datetime(2026, 3, 10, 8, 30),
+        datetime(2026, 3, 10, 12, 0),
+        "Asia/Shanghai",
+    )
+    shared_paper = Paper(
+        title="shared",
+        abstract="",
+        authors=[],
+        arxiv_id="shared-id",
+        paper_id="shared-id",
+        publication_date=datetime(2026, 3, 10, 1, 0, tzinfo=timezone.utc),
+        source="arxiv",
+    )
+    unique_paper = Paper(
+        title="unique",
+        abstract="",
+        authors=[],
+        arxiv_id="unique-id",
+        paper_id="unique-id",
+        publication_date=datetime(2026, 3, 10, 1, 5, tzinfo=timezone.utc),
+        source="arxiv",
+    )
+
+    with patch.object(
+        source,
+        "_fetch_arxiv_feed_page",
+        side_effect=["cs-page", "stat-page"],
+    ):
+        with patch.object(
+            source,
+            "_parse_atom_feed",
+            side_effect=[[shared_paper], [shared_paper, unique_paper]],
+        ):
+            retained = source.fetch_papers_for_interval(interval)
+
+    assert [paper.arxiv_id for paper in retained] == ["shared-id", "unique-id"]
