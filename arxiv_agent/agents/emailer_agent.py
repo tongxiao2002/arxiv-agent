@@ -62,16 +62,12 @@ class EmailerAgent(BaseAgent):
 
         if not self.storage.papers_exist_for_date(target_date):
             message = f"No stored papers found for {target_date}"
-            self.logger.error(message)
-            return {
-                "success": False,
-                "sent": False,
-                "target_date": target_date.isoformat(),
-                "message": message,
-            }
+            self.logger.warning(message)
+            papers = []
+        else:
+            papers = self.storage.load_papers(target_date)
 
-        papers = self.storage.load_papers(target_date)
-        if any(not isinstance(paper, EnhancedPaper) for paper in papers):
+        if len(papers) > 0 and any(not isinstance(paper, EnhancedPaper) for paper in papers):
             message = f"Stored papers for {target_date} are not fully enhanced and cannot be emailed"
             self.logger.error(message)
             return {

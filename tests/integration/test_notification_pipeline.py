@@ -40,6 +40,7 @@ def test_notification_pipeline_end_to_end(temp_dir, monkeypatch):
     )
 
     target_date = date(2026, 3, 12)
+    expected_storage_date = date(2026, 3, 11)
     old_date = date(2026, 1, 15)
     JsonStorage(str(papers_dir)).save_papers(
         old_date,
@@ -108,7 +109,7 @@ def test_notification_pipeline_end_to_end(temp_dir, monkeypatch):
 
     assert result["success"] is True
     assert smtp_client.send_message.call_count == 1
-    assert (papers_dir / "papers_2026-03-12.json").exists()
+    assert (papers_dir / f"papers_{expected_storage_date.isoformat()}.json").exists()
     assert (archive_dir / "papers_2026-01.tar.gz").exists()
     shared_client.close.assert_awaited_once()
 
@@ -144,11 +145,7 @@ def test_interval_run_once_spans_multiple_days_and_skips_email(temp_dir, monkeyp
 
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
 
-    interval = RunOnceInterval.from_local_naive(
-        datetime(2026, 3, 10, 8, 30),
-        datetime(2026, 3, 11, 9, 0),
-        "Asia/Shanghai",
-    )
+    interval = RunOnceInterval.from_dates(date(2026, 3, 10), date(2026, 3, 12))
     sample_papers = [
         Paper(
             title="Day One Relevant Paper",
@@ -168,7 +165,7 @@ def test_interval_run_once_spans_multiple_days_and_skips_email(temp_dir, monkeyp
             authors=["Researcher"],
             arxiv_id="2603.20002",
             paper_id="2603.20002",
-            publication_date=datetime(2026, 3, 10, 17, 30, tzinfo=timezone.utc),
+            publication_date=datetime(2026, 3, 11, 1, 30, tzinfo=timezone.utc),
             categories=["cs.AI"],
             source="arxiv",
             pdf_url="https://arxiv.org/pdf/2603.20002.pdf",

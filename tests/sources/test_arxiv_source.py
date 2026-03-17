@@ -1,6 +1,6 @@
 """Tests for arXiv source implementation."""
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from unittest.mock import Mock, patch
 from urllib.parse import parse_qs, urlparse
 
@@ -385,14 +385,10 @@ def test_get_source_name():
     assert source.get_source_name() == "arxiv"
 
 
-def test_fetch_papers_for_interval_uses_gmt_bounds_and_closed_filtering():
-    """Test interval fetch widens query bounds and then strict-filters locally."""
+def test_fetch_papers_for_interval_uses_direct_date_bounds():
+    """Test interval fetch uses the input dates directly with no timezone shift."""
     source = ArxivSource({"categories": ["cs"]})
-    interval = RunOnceInterval.from_local_naive(
-        datetime(2026, 3, 10, 8, 30, 15),
-        datetime(2026, 3, 10, 10, 0, 0),
-        "Asia/Shanghai",
-    )
+    interval = RunOnceInterval.from_dates(date(2026, 3, 10), date(2026, 3, 11))
     papers = [
         Paper(
             title="start",
@@ -400,7 +396,7 @@ def test_fetch_papers_for_interval_uses_gmt_bounds_and_closed_filtering():
             authors=[],
             arxiv_id="1",
             paper_id="1",
-            publication_date=datetime(2026, 3, 10, 0, 30, 15, tzinfo=timezone.utc),
+            publication_date=datetime(2026, 3, 10, 0, 0, 0, tzinfo=timezone.utc),
             source="arxiv",
         ),
         Paper(
@@ -409,7 +405,7 @@ def test_fetch_papers_for_interval_uses_gmt_bounds_and_closed_filtering():
             authors=[],
             arxiv_id="2",
             paper_id="2",
-            publication_date=datetime(2026, 3, 10, 1, 0, 0, tzinfo=timezone.utc),
+            publication_date=datetime(2026, 3, 10, 12, 0, 0, tzinfo=timezone.utc),
             source="arxiv",
         ),
         Paper(
@@ -418,7 +414,7 @@ def test_fetch_papers_for_interval_uses_gmt_bounds_and_closed_filtering():
             authors=[],
             arxiv_id="3",
             paper_id="3",
-            publication_date=datetime(2026, 3, 10, 2, 0, 0, tzinfo=timezone.utc),
+            publication_date=datetime(2026, 3, 11, 0, 0, 0, tzinfo=timezone.utc),
             source="arxiv",
         ),
         Paper(
@@ -427,7 +423,7 @@ def test_fetch_papers_for_interval_uses_gmt_bounds_and_closed_filtering():
             authors=[],
             arxiv_id="4",
             paper_id="4",
-            publication_date=datetime(2026, 3, 10, 0, 30, 14, tzinfo=timezone.utc),
+            publication_date=datetime(2026, 3, 9, 23, 59, 59, tzinfo=timezone.utc),
             source="arxiv",
         ),
         Paper(
@@ -436,7 +432,7 @@ def test_fetch_papers_for_interval_uses_gmt_bounds_and_closed_filtering():
             authors=[],
             arxiv_id="5",
             paper_id="5",
-            publication_date=datetime(2026, 3, 10, 2, 0, 1, tzinfo=timezone.utc),
+            publication_date=datetime(2026, 3, 11, 0, 0, 1, tzinfo=timezone.utc),
             source="arxiv",
         ),
     ]
@@ -450,22 +446,18 @@ def test_fetch_papers_for_interval_uses_gmt_bounds_and_closed_filtering():
     assert [paper.arxiv_id for paper in retained] == ["1", "2", "3"]
     assert (
         mock_fetch.call_args.kwargs["window_start"].strftime("%Y%m%d%H%M")
-        == "202603100030"
+        == "202603100000"
     )
     assert (
         mock_fetch.call_args.kwargs["window_end"].strftime("%Y%m%d%H%M")
-        == "202603100200"
+        == "202603110000"
     )
 
 
 def test_fetch_papers_for_interval_pages_results():
     """Test interval fetch keeps paging until a short page is returned."""
     source = ArxivSource({"categories": ["cs"]})
-    interval = RunOnceInterval.from_local_naive(
-        datetime(2026, 3, 10, 8, 30),
-        datetime(2026, 3, 10, 12, 0),
-        "Asia/Shanghai",
-    )
+    interval = RunOnceInterval.from_dates(date(2026, 3, 10), date(2026, 3, 11))
     page_one = [
         Paper(
             title=f"paper-{index}",
@@ -522,11 +514,7 @@ def test_fetch_papers_for_interval_pages_results():
 def test_fetch_papers_for_interval_deduplicates_across_categories():
     """Test interval fetch deduplicates the same paper returned in multiple categories."""
     source = ArxivSource({"categories": ["cs", "stat"]})
-    interval = RunOnceInterval.from_local_naive(
-        datetime(2026, 3, 10, 8, 30),
-        datetime(2026, 3, 10, 12, 0),
-        "Asia/Shanghai",
-    )
+    interval = RunOnceInterval.from_dates(date(2026, 3, 10), date(2026, 3, 11))
     shared_paper = Paper(
         title="shared",
         abstract="",

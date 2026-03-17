@@ -281,7 +281,7 @@ class ScraperAgent(BaseAgent):
         run_interval: RunOnceInterval,
         papers: List[Paper],
     ) -> Dict[str, int] | None:
-        """Group interval papers by local day and merge them into daily storage."""
+        """Group interval papers by their raw publication date and merge storage."""
         grouped: Dict[str, List[Paper]] = {}
         for paper in papers:
             if paper.publication_date is None:
@@ -290,8 +290,8 @@ class ScraperAgent(BaseAgent):
                     paper.title,
                 )
                 continue
-            local_day = run_interval.local_date_for(paper.publication_date).isoformat()
-            grouped.setdefault(local_day, []).append(paper)
+            storage_day = run_interval.storage_date_for(paper.publication_date)
+            grouped.setdefault(storage_day.isoformat(), []).append(paper)
 
         stored_by_day: Dict[str, int] = {}
         for date_text, day_papers in grouped.items():

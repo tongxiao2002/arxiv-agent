@@ -329,29 +329,23 @@ def test_scraper_agent_run_interval_groups_and_merges(mock_fetch, mock_merge):
     mock_merge.return_value = True
 
     config = {
-        "agent": {"timezone": "Asia/Shanghai"},
         "sources": {
             "primary": "arxiv",
             "arxiv": {"categories": ["cs"], "max_papers": 50},
         },
         "storage": {"data_dir": "./papers"},
     }
-    interval = RunOnceInterval.from_local_naive(
-        datetime(2026, 3, 10, 8, 30),
-        datetime(2026, 3, 11, 9, 0),
-        "Asia/Shanghai",
-    )
+    interval = RunOnceInterval.from_dates(date(2026, 3, 10), date(2026, 3, 11))
 
     agent = ScraperAgent(config)
     result = agent.run(run_interval=interval)
 
     assert result["success"] is True
-    assert result["affected_days"] == ["2026-03-10", "2026-03-11"]
-    assert result["stored_by_day"] == {"2026-03-10": 1, "2026-03-11": 1}
+    assert result["affected_days"] == ["2026-03-10"]
+    assert result["stored_by_day"] == {"2026-03-10": 2}
     mock_fetch.assert_called_once_with(interval, max_papers=50)
-    assert mock_merge.call_count == 2
+    assert mock_merge.call_count == 1
     assert mock_merge.call_args_list[0].args[0] == date(2026, 3, 10)
-    assert mock_merge.call_args_list[1].args[0] == date(2026, 3, 11)
 
 
 @patch("arxiv_agent.agents.scraper_agent.get_current_date_in_timezone")

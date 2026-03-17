@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
-from datetime import date, datetime
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -79,8 +79,8 @@ def run_once_command(
     if run_interval is not None:
         logger.info(
             "Running one-time interval execution from %s to %s (dry_run=%s, no_email=%s)",
-            run_interval.local_start.isoformat(),
-            run_interval.local_end.isoformat(),
+            run_interval.start_date.isoformat(),
+            run_interval.end_date.isoformat(),
             dry_run,
             no_email,
         )
@@ -111,7 +111,7 @@ def run_once_command(
         print(
             "Run-once "
             f"{mode} completed for interval "
-            f"{run_interval.local_start.isoformat()} -> {run_interval.local_end.isoformat()}"
+            f"{run_interval.start_date.isoformat()} -> {run_interval.end_date.isoformat()}"
         )
         return {
             "success": True,
@@ -175,8 +175,8 @@ Examples:
   arxiv-agent start                # Start scheduled agent
   arxiv-agent run-once             # Run one-time scan and email
   arxiv-agent run-once --dry-run   # Dry run without actual operations
-  arxiv-agent run-once --from 2026-03-10T08:30 --to 2026-03-12T18:00
-                                   # One-off interval backfill in agent timezone
+  arxiv-agent run-once --from 2026-03-15 --to 2026-03-16
+                                   # One-off arXiv date interval with no timezone shift
   arxiv-agent version              # Show version information
         """,
     )
@@ -205,13 +205,13 @@ Examples:
     )
     run_once_parser.add_argument(
         "--from",
-        dest="from_datetime",
-        help="Start of the closed local datetime interval (ISO 8601, no timezone)",
+        dest="from_date",
+        help="Start date for the direct arXiv interval (YYYY-MM-DD)",
     )
     run_once_parser.add_argument(
         "--to",
-        dest="to_datetime",
-        help="End of the closed local datetime interval (ISO 8601, no timezone)",
+        dest="to_date",
+        help="End date for the direct arXiv interval (YYYY-MM-DD)",
     )
     run_once_parser.add_argument(
         "--no-email",
@@ -525,45 +525,36 @@ def _parse_run_once_interval(
     parsed_args: argparse.Namespace,
 ) -> Optional[RunOnceInterval]:
     """Parse and validate the optional run-once interval arguments."""
-    from_value = getattr(parsed_args, "from_datetime", None)
-    to_value = getattr(parsed_args, "to_datetime", None)
+    from_value = getattr(parsed_args, "from_date", None)
+    to_value = getattr(parsed_args, "to_date", None)
 
     if bool(from_value) != bool(to_value):
         raise ValueError("run-once requires both --from and --to together")
     if not from_value:
         return None
 
-    start = _parse_local_datetime_value("--from", from_value)
-    end = _parse_local_datetime_value("--to", to_value)
-    return RunOnceInterval.from_local_naive(
+    start = _parse_date_value("--from", from_value)
+    end = _parse_date_value("--to", to_value)
+    return RunOnceInterval.from_dates(
         start,
         end,
-        config.agent.timezone,
     )
 
 
-def _parse_local_datetime_value(flag_name: str, value: str) -> datetime:
-    """Parse a naive ISO local datetime value for run-once interval mode."""
-    if "T" not in value and " " not in value:
-        raise ValueError(
-            f"{flag_name} must include both date and time, for example 2026-03-10T08:30"
-        )
-
+def _parse_date_value(flag_name: str, value: str) -> date:
+    """Parse a date-only value for run-once interval mode."""
     try:
-        parsed = datetime.fromisoformat(value)
+        parsed = date.fromisoformat(value)
     except ValueError as exc:
         raise ValueError(
-            f"{flag_name} must be a valid ISO local datetime, for example 2026-03-10T08:30"
+            f"{flag_name} must be a valid ISO date, for example 2026-03-15"
         ) from exc
-
-    if parsed.tzinfo is not None:
-        raise ValueError(f"{flag_name} must not include a timezone offset")
     return parsed
 
 
 def _get_target_date(config: Config) -> date:
-    """Return the current date in the configured timezone."""
-    return get_current_date_in_timezone(config.agent.timezone)
+    """Return the yesterday's date in the configured timezone."""
+    return get_current_date_in_timezone(config.agent.timezone) - timedelta(days=1)
 
 
 if __name__ == "__main__":

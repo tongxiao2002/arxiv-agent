@@ -389,19 +389,19 @@ class ArxivSource(BaseSource):
         max_papers: Optional[int] = None,
     ) -> List[Paper]:
         """
-        Fetch papers for an explicit local datetime interval.
+        Fetch papers for an explicit date interval.
 
-        The arXiv API query is widened to minute precision in GMT and then strict
-        filtering is applied against the original closed local interval.
+        The arXiv API query uses the date bounds directly as provided by the user,
+        without timezone conversion, and the returned papers are filtered against
+        that same direct interval.
         """
-        gmt_start, gmt_end = interval.gmt_bounds()
+        query_start, query_end = interval.gmt_bounds()
         logger.info(
-            "Fetching arXiv interval: local=[%s, %s] timezone=%s gmt=[%s, %s]",
-            interval.local_start.isoformat(),
-            interval.local_end.isoformat(),
-            interval.timezone_name,
-            gmt_start,
-            gmt_end,
+            "Fetching arXiv interval: dates=[%s, %s] query=[%s, %s]",
+            interval.start_date.isoformat(),
+            interval.end_date.isoformat(),
+            query_start,
+            query_end,
         )
 
         effective_max_papers = self.max_papers if max_papers is None else max_papers
@@ -411,8 +411,8 @@ class ArxivSource(BaseSource):
             try:
                 category_papers = self._fetch_category_papers(
                     category,
-                    window_start=interval.query_start_utc,
-                    window_end=interval.query_end_utc,
+                    window_start=interval.query_start,
+                    window_end=interval.query_end,
                     max_papers=effective_max_papers,
                 )
                 all_papers.extend(category_papers)
@@ -432,7 +432,7 @@ class ArxivSource(BaseSource):
             if interval.contains(paper.publication_date)
         ]
         logger.info(
-            "Interval fetch retained %s/%s papers after strict local filtering",
+            "Interval fetch retained %s/%s papers after direct date filtering",
             len(retained_papers),
             len(unique_papers),
         )

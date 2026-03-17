@@ -2,7 +2,7 @@
 
 import sys
 from argparse import Namespace
-from datetime import date, datetime
+from datetime import date
 from unittest.mock import Mock, patch
 
 import pytest
@@ -131,11 +131,7 @@ def test_run_once_command_no_email_skips_email_workflow():
 def test_run_once_command_interval_mode_runs_interval_workflows(capsys):
     """Test interval mode uses per-interval scan and email orchestration."""
     config = make_config()
-    interval = RunOnceInterval.from_local_naive(
-        datetime(2026, 3, 10, 8, 30),
-        datetime(2026, 3, 11, 9, 0),
-        "Asia/Shanghai",
-    )
+    interval = RunOnceInterval.from_dates(date(2026, 3, 10), date(2026, 3, 11))
 
     with patch(
         "arxiv_agent.cli._run_interval_scan_workflow",
@@ -161,20 +157,20 @@ def test_run_once_command_interval_mode_runs_interval_workflows(capsys):
 
 
 def test_parse_run_once_interval_requires_both_values():
-    """Test interval mode rejects partial datetime input."""
+    """Test interval mode rejects partial date input."""
     config = make_config()
-    args = Namespace(from_datetime="2026-03-10T08:30", to_datetime=None)
+    args = Namespace(from_date="2026-03-10", to_date=None)
 
     with pytest.raises(ValueError, match="both --from and --to together"):
         _parse_run_once_interval(config, args)
 
 
-def test_parse_run_once_interval_rejects_invalid_datetime():
-    """Test interval mode rejects invalid ISO local datetimes."""
+def test_parse_run_once_interval_rejects_invalid_date():
+    """Test interval mode rejects invalid ISO dates."""
     config = make_config()
-    args = Namespace(from_datetime="2026/03/10 08:30", to_datetime="2026-03-10T09:30")
+    args = Namespace(from_date="2026/03/10", to_date="2026-03-11")
 
-    with pytest.raises(ValueError, match="valid ISO local datetime"):
+    with pytest.raises(ValueError, match="valid ISO date"):
         _parse_run_once_interval(config, args)
 
 
@@ -182,8 +178,8 @@ def test_parse_run_once_interval_rejects_long_intervals():
     """Test interval mode enforces the 31-day cap."""
     config = make_config()
     args = Namespace(
-        from_datetime="2026-03-01T00:00",
-        to_datetime="2026-04-02T00:01",
+        from_date="2026-03-01",
+        to_date="2026-04-02",
     )
 
     with pytest.raises(ValueError, match="cannot exceed 31 days"):
@@ -341,9 +337,9 @@ def test_main_run_once_interval_no_email(
         [
             "run-once",
             "--from",
-            "2026-03-10T08:30",
+            "2026-03-10",
             "--to",
-            "2026-03-11T09:00",
+            "2026-03-11",
             "--no-email",
         ]
     )
@@ -398,7 +394,7 @@ def test_main_help(capsys):
 def test_main_start_rejects_interval_flags(capsys):
     """Test start does not accept run-once interval flags."""
     with pytest.raises(SystemExit) as exc_info:
-        main(["start", "--from", "2026-03-10T08:30", "--to", "2026-03-10T09:00"])
+        main(["start", "--from", "2026-03-10", "--to", "2026-03-11"])
     assert exc_info.value.code == 2
     captured = capsys.readouterr()
     assert "usage:" in captured.err
